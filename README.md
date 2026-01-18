@@ -1,6 +1,4 @@
-Got it. Below is a **cleaner and more concise README** that keeps the core value and developer usability, while removing repetition and long explanations. It is suitable for GitHub, npm, and first time readers.
 
----
 
 # KwesPay TypeScript SDK
 
