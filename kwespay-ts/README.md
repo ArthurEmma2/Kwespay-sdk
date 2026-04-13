@@ -1,22 +1,52 @@
-# @kwespay-ts/sdk
+# @kwespay/client
 
 TypeScript SDK for [KwesPay](https://www.kwespay.xyz/) — accept crypto payments in your app with minimal setup.
 
 All pricing, signing, and contract addresses are managed server-side. You initialise the client, request a quote, and execute the payment. Nothing else is required.
 
+---
+
+## Prerequisites
+
+Before installing the SDK, you need a KwesPay vendor account and an API key.
+
+1. Go to [app.kwespay.xyz](https://app.kwespay.xyz) and create an account
+2. Create a vendor profile — this gives you your **Vendor ID**
+3. Navigate to **API Keys** and generate a key — this is your **API Key**
+
+Keep both values handy; you will need them to initialise the client.
+
+---
+
+## Installation
+
+```bash
+npm install @kwespay/client
+```
+
+```bash
+yarn add @kwespay/client
+```
+
+```bash
+pnpm add @kwespay/client
+```
+
+---
 
 ## Requirements
 
 - Node.js 18+
 - TypeScript 5+
 - An EIP-1193 compatible wallet provider (MetaMask, WalletConnect, etc.)
-- A KwesPay API key
+- A KwesPay API key (see [Prerequisites](#prerequisites))
 
 ---
 
 ## Quick Start
+
 ```typescript
-import { KwesPayClient } from "kwespay";
+import { KwesPayClient } from "@kwespay/client";
 
 const client = new KwesPayClient({ apiKey: "your-api-key" });
 
@@ -55,6 +85,7 @@ Creates a new client instance.
 ### `client.validateKey()`
 
 Validates the configured API key and returns its scope.
+
 ```typescript
 const result = await client.validateKey();
 
@@ -73,6 +104,7 @@ if (result.isValid) {
 ### `client.quote(params)`
 
 Fetches a price quote and prepares a transaction payload in a single call. The returned payload is passed directly to `client.pay()`.
+
 ```typescript
 const payload = await client.quote({
   vendorIdentifier: "your-vendor-id",
@@ -86,7 +118,7 @@ const payload = await client.quote({
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `vendorIdentifier` | `string` | Yes | Your vendor UUID |
+| `vendorIdentifier` | `string` | Yes | Your vendor UUID from [app.kwespay.xyz](https://app.kwespay.xyz) |
 | `fiatAmount` | `number` | Yes | Amount in fiat to charge |
 | `fiatCurrency` | `string` | No | Fiat currency code. Defaults to `"USD"` |
 | `cryptoCurrency` | `TokenSymbol` | Yes | Token to accept |
@@ -100,6 +132,7 @@ const payload = await client.quote({
 ### `client.pay(params)`
 
 Executes the on-chain payment. Handles network switching, token approval, and transaction submission automatically.
+
 ```typescript
 const result = await client.pay({
   provider: window.ethereum,
@@ -129,6 +162,7 @@ The `onStatus` callback fires at each stage of the payment flow:
 | `Waiting for confirmation` | Payment tx is confirming on-chain |
 
 **Returns** — `PaymentResult`
+
 ```typescript
 interface PaymentResult {
   txHash: string;
@@ -143,12 +177,14 @@ interface PaymentResult {
 ### `client.getTransactionStatus(transactionReference)`
 
 Polls the KwesPay backend for the current status of a transaction.
+
 ```typescript
 const status = await client.getTransactionStatus("txn_ref_here");
 console.log(status.transactionStatus); // "completed"
 ```
 
 **Returns** — `TransactionStatusResult`
+
 ```typescript
 interface TransactionStatusResult {
   transactionReference: string;
@@ -176,12 +212,13 @@ interface TransactionStatusResult {
 | `polygonAmoy` | Polygon Amoy (testnet) |
 | `lisk` | Lisk Mainnet |
 | `liskTestnet` | Lisk Testnet |
+| `MezoTestnet` | Mezo Testnet |
 
 ---
 
 ## Supported Tokens
 
-`ETH`, `MATIC`, `USDT`, `USDC`, `USDC.E`, `USDBC`, `DAI`, `LSK`
+`ETH`, `MATIC`, `USDT`, `USDC`, `USDC.E`, `USDBC`, `DAI`, `LSK`, `MUSD`
 
 Custom token addresses are also accepted as a plain string.
 
@@ -190,8 +227,9 @@ Custom token addresses are also accepted as a plain string.
 ## Error Handling
 
 All errors are thrown as `KwesPayError` instances with a `code` property.
+
 ```typescript
-import { KwesPayClient, KwesPayError } from "kwespay";
+import { KwesPayClient, KwesPayError } from "@kwespay/client";
 
 try {
   const payload = await client.quote({ ... });
@@ -242,6 +280,7 @@ try {
 The SDK is written in TypeScript and ships its own types. No additional `@types` packages are required.
 
 Key types exported from the package:
+
 ```typescript
 import type {
   KwesPayConfig,
@@ -255,7 +294,7 @@ import type {
   TokenSymbol,
   EIP1193Provider,
   KwesPayErrorCode,
-} from "kwespay";
+} from "@kwespay/client";
 ```
 
 ---
