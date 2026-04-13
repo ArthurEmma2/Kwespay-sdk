@@ -1,6 +1,6 @@
 # @kwespay-ts/sdk
 
-TypeScript SDK for [KwesPay] — accept crypto payments in your app with minimal setup.
+TypeScript SDK for [KwesPay](https://www.kwespay.xyz/) — accept crypto payments in your app with minimal setup.
 
 All pricing, signing, and contract addresses are managed server-side. You initialise the client, request a quote, and execute the payment. Nothing else is required.
 
