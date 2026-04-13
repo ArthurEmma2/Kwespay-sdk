@@ -1,0 +1,51 @@
+{
+  "name": "@kwespay/client",
+  "version": "0.1.10",
+  "description": "TypeScript SDK for KwesPay — accept crypto payments in three steps.",
+  "author": "KwesPay",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "default": "./dist/esm/index.js"
+    }
+  },
+  "main": "./dist/esm/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "scripts": {
+    "build": "npm run clean && npm run build:esm && npm run build:cjs && npm run build:types && npm run build:browser",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:types": "tsc -p tsconfig.types.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit -p tsconfig.esm.json",
+    "prepublishOnly": "npm run build",
+    "build:browser": "rollup -c rollup.config.js"
+  },
+  "devDependencies": {
+    "viem": "^2.21.0",
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "@rollup/plugin-typescript": "^11.1.6",
+    "rollup": "^4.18.0",
+    "tslib": "^2.6.3",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "kwespay",
+    "crypto",
+    "payments",
+    "web3",
+    "blockchain",
+    "erc20",
+    "graphql"
+  ]
+}
