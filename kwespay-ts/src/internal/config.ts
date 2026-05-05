@@ -1,16 +1,18 @@
 import type { NetworkKey } from "../types/index.js";
 
-export const ENDPOINT = "https://d502-154-161-98-26.ngrok-free.app/graphql";
+export const ENDPOINT = "https://ad30-154-161-173-138.ngrok-free.app/graphql";
 
 const TESTNET_CONTRACTS: Partial<Record<NetworkKey, string>> = {
-  sepolia: "0x39bE436D6A34d0990cb71c9cBD24a5361d85e00B",
-  baseSepolia: "0x7515b1b1BcA33E7a9ccBd5E2b93771884654De77",
-  polygonAmoy: "0xD31dF3eBd220Fd3e190A346F8927819295d28980",
-  liskTestnet: "0xd04A78a998146EBAD04c2b68E020C06Dc3b3717f",
+  sepolia: "0xD9312df771aEf74a6748c0C46A706873C67F44C7",
+  baseSepolia: "0x3d7A6a7aD72374D2d3dca4e97053bAbFA6E49ec0",
+  polygonAmoy: "0xEb40935599d5D8ef39C1aAE38E7A1f6d9c89B3fF",
+  liskTestnet: "0x3378B6074A9DA47Aef8b7C849aFcaF58b8D8134b",
+  mezoTestnet: "0x67f3Df6B5BE714303F397104d8F2A3861b9E8b6d",
 };
 
+
 const MAINNET_CONTRACTS: Partial<Record<NetworkKey, string>> = {
-  // lisk:     "0x...",
+  // lisk: "0x...",
 };
 
 const CONTRACT_ADDRESSES: Partial<Record<NetworkKey, string>> = {

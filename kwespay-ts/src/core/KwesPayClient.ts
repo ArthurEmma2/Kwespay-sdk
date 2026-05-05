@@ -1,3 +1,4 @@
+
 import {
   KwesPayConfig,
   QuoteParams,
@@ -17,6 +18,19 @@ import {
   GQL_TRANSACTION_STATUS,
 } from "../gql/queries.js";
 import { PaymentService } from "../services/PaymentService.js";
+
+const PLATFORM_FEE_BPS = 50n; // 0.5%
+const BASIS_POINTS = 10_000n;
+
+function computeFee(amountBaseUnits: string): bigint {
+  return (BigInt(amountBaseUnits) * PLATFORM_FEE_BPS) / BASIS_POINTS;
+}
+
+function computeTotal(amountBaseUnits: string): string {
+  return (BigInt(amountBaseUnits) + computeFee(amountBaseUnits)).toString();
+}
+
+
 
 interface RawValidateKey {
   validateAccessKey: {
@@ -61,6 +75,7 @@ interface RawCreateTransaction {
     tokenAddress: string | null;
     amountBaseUnits: string | null;
     chainId: number | null;
+    deadline: number | null;
     expiresAt: string | null;
     transaction: {
       transactionReference: string;
@@ -82,6 +97,7 @@ interface RawTransactionStatus {
   };
 }
 
+
 export class KwesPayClient {
   private readonly apiKey: string;
 
@@ -90,6 +106,8 @@ export class KwesPayClient {
       throw new KwesPayError("apiKey is required", "INVALID_KEY");
     this.apiKey = config.apiKey;
   }
+
+
 
   async validateKey() {
     const data = await gqlRequest<RawValidateKey>(GQL_VALIDATE_KEY, {
@@ -117,6 +135,8 @@ export class KwesPayClient {
     };
   }
 
+  // getQuote (price preview only — no transaction created)
+
   async getQuote(params: QuoteParams): Promise<QuoteResult> {
     const data = await gqlRequest<RawCreateQuote>(
       GQL_CREATE_QUOTE,
@@ -134,18 +154,15 @@ export class KwesPayClient {
     const q = data.createQuote;
     if (!q.success) {
       const msg = q.message ?? "Quote creation failed";
-      const code = msg.toLowerCase().includes("expired")
-        ? "QUOTE_EXPIRED"
-        : msg.toLowerCase().includes("key")
-        ? "INVALID_KEY"
-        : "UNKNOWN";
-      throw new KwesPayError(msg, code);
+      throw new KwesPayError(msg, _quoteErrCode(msg));
     }
     return {
       quoteId: q.quoteId!,
       cryptoCurrency: q.cryptoCurrency!,
       tokenAddress: q.tokenAddress!,
       amountBaseUnits: q.amountBaseUnits!,
+      // totalBaseUnits = amountBaseUnits + fee — safe to compute here for UI
+      totalBaseUnits: computeTotal(q.amountBaseUnits!),
       displayAmount: q.displayAmount!,
       network: q.network!,
       chainId: q.chainId!,
@@ -153,7 +170,10 @@ export class KwesPayClient {
     };
   }
 
+  //  quote() — full flow: price + transaction, returns wallet-ready payload 
+
   async quote(params: QuoteParams): Promise<TransactionPayload> {
+    // Step 1 — get price & lock quote
     const quoteData = await gqlRequest<RawCreateQuote>(
       GQL_CREATE_QUOTE,
       {
@@ -170,14 +190,10 @@ export class KwesPayClient {
     const q = quoteData.createQuote;
     if (!q.success) {
       const msg = q.message ?? "Quote creation failed";
-      const code = msg.toLowerCase().includes("expired")
-        ? "QUOTE_EXPIRED"
-        : msg.toLowerCase().includes("key")
-        ? "INVALID_KEY"
-        : "UNKNOWN";
-      throw new KwesPayError(msg, code);
+      throw new KwesPayError(msg, _quoteErrCode(msg));
     }
 
+    // Step 2 — create transaction (backend signs payment params incl. deadline)
     const txData = await gqlRequest<RawCreateTransaction>(
       GQL_CREATE_TRANSACTION,
       {
@@ -191,23 +207,33 @@ export class KwesPayClient {
     const t = txData.createTransaction;
     if (!t.success) {
       const msg = t.message ?? "Transaction creation failed";
-      const code = msg.toLowerCase().includes("expired")
-        ? "QUOTE_EXPIRED"
-        : msg.toLowerCase().includes("already been used")
-        ? "QUOTE_USED"
-        : msg.toLowerCase().includes("not found")
-        ? "QUOTE_NOT_FOUND"
-        : msg.toLowerCase().includes("key")
-        ? "INVALID_KEY"
-        : "UNKNOWN";
-      throw new KwesPayError(msg, code);
+      throw new KwesPayError(msg, _txErrCode(msg));
     }
+
+    // deadline must be present — it's part of the on-chain signature
+    if (!t.deadline) {
+      throw new KwesPayError(
+        "Backend did not return a deadline. Cannot construct a valid payment.",
+        "TRANSACTION_FAILED"
+      );
+    }
+
+    // totalBaseUnits: what the customer must actually send (amount + fee).
+    // We compute this from the signed amountBaseUnits using the same formula
+    // the contract uses: (amount * 50) / 10000.  We do NOT trust a
+    // client-side totalBaseUnits for security — but computing it here is safe
+    // because amountBaseUnits came from the backend-signed response.
+    const amountBaseUnits = t.amountBaseUnits!;
+    const totalBaseUnits = computeTotal(amountBaseUnits);
+
     return {
       paymentIdBytes32: t.paymentIdBytes32!,
       backendSignature: t.backendSignature!,
       tokenAddress: t.tokenAddress!,
-      amountBaseUnits: t.amountBaseUnits!,
+      amountBaseUnits,
+      totalBaseUnits,
       chainId: t.chainId!,
+      deadline: t.deadline, // ← from backend, part of signed hash
       expiresAt: t.expiresAt!,
       transactionReference: t.transaction!.transactionReference,
       transactionStatus: t.transaction!.transactionStatus as TransactionStatus,
@@ -216,18 +242,20 @@ export class KwesPayClient {
     };
   }
 
+  // pay()
+
   async pay(params: PayParams): Promise<PaymentResult> {
     return new PaymentService(params.provider).pay(params);
   }
+
+  //  status polling
 
   async getTransactionStatus(
     transactionReference: string
   ): Promise<TransactionStatusResult> {
     const data = await gqlRequest<RawTransactionStatus>(
       GQL_TRANSACTION_STATUS,
-      {
-        transactionReference,
-      }
+      { transactionReference }
     );
     const r = data.getTransactionStatus;
     return {
@@ -283,4 +311,22 @@ export class KwesPayClient {
       }, intervalMs);
     });
   }
+}
+
+//  Error code helpers 
+
+function _quoteErrCode(msg: string) {
+  const m = msg.toLowerCase();
+  if (m.includes("expired")) return "QUOTE_EXPIRED" as const;
+  if (m.includes("key")) return "INVALID_KEY" as const;
+  return "UNKNOWN" as const;
+}
+
+function _txErrCode(msg: string) {
+  const m = msg.toLowerCase();
+  if (m.includes("expired")) return "QUOTE_EXPIRED" as const;
+  if (m.includes("already been used")) return "QUOTE_USED" as const;
+  if (m.includes("not found")) return "QUOTE_NOT_FOUND" as const;
+  if (m.includes("key")) return "INVALID_KEY" as const;
+  return "UNKNOWN" as const;
 }

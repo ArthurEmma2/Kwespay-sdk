@@ -82,11 +82,18 @@ export class PaymentService {
   private async ensureSufficientBalance(
     walletAddress: string,
     tokenAddress: string,
-    amountBaseUnits: string,
+    totalBaseUnits: string,
     onStatus?: (title: string, detail: string) => void
   ): Promise<void> {
-    const amount = BigInt(amountBaseUnits);
+    const total = BigInt(totalBaseUnits);
     const isNative = tokenAddress === ZERO_ADDRESS;
+
+    console.log("[KwesPay] Balance check →", {
+      walletAddress,
+      tokenAddress,
+      totalBaseUnits,
+      isNative,
+    });
 
     onStatus?.("Checking balance", "Verifying wallet balance…");
 
@@ -97,15 +104,17 @@ export class PaymentService {
     const nativeBalance =
       nativeRaw && nativeRaw !== "0x" ? BigInt(nativeRaw) : 0n;
 
+    console.log("[KwesPay] Native balance:", nativeBalance.toString());
+
     if (isNative) {
-      const required = amount + GAS_BUFFER;
+      const required = total + GAS_BUFFER;
       if (nativeBalance < required) {
         throw new KwesPayError(
           `Insufficient native balance. Required ~${(
             Number(required) / 1e18
-          ).toFixed(8)} ETH (payment + gas), available: ${(
+          ).toFixed(8)} (payment + fee + gas), available: ${(
             Number(nativeBalance) / 1e18
-          ).toFixed(8)} ETH.`,
+          ).toFixed(8)}.`,
           "INSUFFICIENT_BALANCE"
         );
       }
@@ -116,11 +125,21 @@ export class PaymentService {
       throw new KwesPayError(
         `Insufficient gas balance. Need at least ${(
           Number(GAS_BUFFER) / 1e18
-        ).toFixed(8)} ETH for gas, available: ${(
+        ).toFixed(8)} for gas, available: ${(
           Number(nativeBalance) / 1e18
-        ).toFixed(8)} ETH.`,
+        ).toFixed(8)}.`,
         "INSUFFICIENT_BALANCE"
       );
+    }
+
+    // Guard: if the token address is the zero address (misconfigured / placeholder not yet set),
+    // skip the on-chain balance check rather than reading a non-existent contract and getting 0.
+    // The contract call itself will fail with a clearer error if the token is truly wrong.
+    if (tokenAddress === ZERO_ADDRESS) {
+      console.warn(
+        "[KwesPay] Token address is zero address — skipping ERC-20 balance check. Set the correct token contract address in your config."
+      );
+      return;
     }
 
     const balanceData =
@@ -131,18 +150,36 @@ export class PaymentService {
       params: [{ to: tokenAddress, data: balanceData }, "latest"],
     })) as string;
 
-    const tokenBalance = raw && raw !== "0x" ? BigInt(raw) : 0n;
+    console.log("[KwesPay] Raw token balance response:", raw);
 
-    if (tokenBalance < amount) {
+    // If eth_call returns "0x" the contract doesn't exist on this chain —
+    // this means tokenAddress is wrong for the connected network.
+    if (!raw || raw === "0x") {
       throw new KwesPayError(
-        `Insufficient token balance. Required: ${amount.toString()}, available: ${tokenBalance.toString()} (base units).`,
+        `Could not read balance for token ${tokenAddress} on this network. ` +
+          `This token may not be deployed on the selected network. Please contact support.`,
+        "INSUFFICIENT_BALANCE"
+      );
+    }
+
+    const tokenBalance = BigInt(raw);
+    console.log(
+      "[KwesPay] Token balance:",
+      tokenBalance.toString(),
+      "required:",
+      total.toString()
+    );
+
+    if (tokenBalance < total) {
+      throw new KwesPayError(
+        `Insufficient token balance. Required: ${total.toString()} (amount + fee), available: ${tokenBalance.toString()} (base units).`,
         "INSUFFICIENT_BALANCE"
       );
     }
   }
 
   async pay(params: PayParams): Promise<PaymentResult> {
-    const { provider, payload, onStatus } = params;
+    const { payload, onStatus } = params;
 
     if (!payload.paymentIdBytes32 || !payload.backendSignature) {
       throw new KwesPayError(
@@ -158,6 +195,27 @@ export class PaymentService {
       );
     }
 
+    if (!payload.totalBaseUnits) {
+      throw new KwesPayError(
+        "Invalid transaction payload — missing totalBaseUnits",
+        "TRANSACTION_FAILED"
+      );
+    }
+
+    if (!payload.deadline) {
+      throw new KwesPayError(
+        "Invalid transaction payload — missing deadline",
+        "TRANSACTION_FAILED"
+      );
+    }
+
+    if (BigInt(payload.totalBaseUnits) < BigInt(payload.amountBaseUnits)) {
+      throw new KwesPayError(
+        "Invalid transaction payload — totalBaseUnits cannot be less than amountBaseUnits",
+        "TRANSACTION_FAILED"
+      );
+    }
+
     await this.ensureCorrectNetwork(payload.chainId, payload.network, onStatus);
 
     const accounts = (await this.provider.request({
@@ -168,7 +226,7 @@ export class PaymentService {
     await this.ensureSufficientBalance(
       walletAddress,
       payload.tokenAddress,
-      payload.amountBaseUnits,
+      payload.totalBaseUnits,
       onStatus
     );
 
@@ -176,7 +234,7 @@ export class PaymentService {
 
     await this.contractService.ensureApproval(
       payload.tokenAddress,
-      payload.amountBaseUnits,
+      payload.totalBaseUnits,
       contractAddress,
       payload.chainId,
       onStatus
@@ -188,8 +246,10 @@ export class PaymentService {
         vendorIdentifier: payload.vendorIdentifier,
         tokenAddress: payload.tokenAddress,
         amountBaseUnits: payload.amountBaseUnits,
+        totalBaseUnits: payload.totalBaseUnits,
         backendSignature: payload.backendSignature,
         contractAddress,
+        deadline: payload.deadline,
         chainId: payload.chainId,
       },
       onStatus

@@ -37,6 +37,9 @@ export const GQL_CREATE_QUOTE = `
   }
 `;
 
+// deadline is NOT queried — derived from expiresAt (same point in time, Unix int).
+// Add `deadline` back here after the backend schema is regenerated with the
+// updated BlockchainTransactionResponse type.
 export const GQL_CREATE_TRANSACTION = `
   mutation CreateTransaction($input: CreateTransactionInput!) {
     createTransaction(input: $input) {

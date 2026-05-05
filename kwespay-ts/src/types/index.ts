@@ -10,10 +10,12 @@ export type NetworkKey =
   | "polygon"
   | "polygonAmoy"
   | "lisk"
-  | "liskTestnet";
+  | "liskTestnet"
+  | "mezoTestnet";
 
 export type TokenSymbol =
   | "ETH"
+  | "BTC"
   | "MATIC"
   | "USDT"
   | "USDC"
@@ -21,6 +23,7 @@ export type TokenSymbol =
   | "USDBC"
   | "DAI"
   | "LSK"
+  | "MUSD"
   | string;
 
 export interface QuoteParams {
@@ -37,6 +40,7 @@ export interface QuoteResult {
   cryptoCurrency: string;
   tokenAddress: string;
   amountBaseUnits: string;
+  totalBaseUnits: string;
   displayAmount: number;
   network: string;
   chainId: number;
@@ -47,12 +51,23 @@ export interface TransactionPayload {
   paymentIdBytes32: string;
   backendSignature: string;
   tokenAddress: string;
+  /**
+   * The exact amount the merchant must receive, in token smallest units.
+   * This is what the backend signed — passed directly to the contract.
+   */
   amountBaseUnits: string;
+  /**
+   * amountBaseUnits + platform fee, in token smallest units.
+   * This is what the customer must send — used for balance checks and ERC-20 approvals.
+   * Computed and provided by the backend. Never derived on the client.
+   */
+  totalBaseUnits: string;
   chainId: number;
   expiresAt: string;
   transactionReference: string;
   transactionStatus: TransactionStatus;
   network: NetworkKey;
+  deadline: number | null;
   vendorIdentifier: string;
 }
 

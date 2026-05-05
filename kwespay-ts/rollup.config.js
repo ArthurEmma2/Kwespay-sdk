@@ -19,8 +19,6 @@ export default [
       }),
     ],
   },
-
-  // ✅ IIFE build (for CDN / script tag)
   {
     input: "src/index.ts",
     output: {
@@ -41,4 +39,3 @@ export default [
     ],
   },
 ];
-"module": "dist/esm/index.js"
