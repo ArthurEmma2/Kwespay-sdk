@@ -1,3 +1,17 @@
 node_modules
 dist
 *.tsbuildinfo
+
+# Local test/scratch scripts — not part of the package or a formal test suite
+test-*.mjs
+test-*.js
+test-*.ts
+*.test.mjs
+*.test.js
+*.test.ts
+*.spec.mjs
+*.spec.js
+*.spec.ts
+/test/
+/tests/
+/__tests__/

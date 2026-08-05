@@ -1,5 +1,5 @@
 import { KwesPayError } from "../types/index.js";
-import { ENDPOINT } from "../internal/config.js";
+import { getEndpoint } from "../internal/config.js";
 
 interface GQLResponse<T> {
   data?: T;
@@ -18,7 +18,7 @@ export async function gqlRequest<T>(
 
   let response: Response;
   try {
-    response = await fetch(ENDPOINT, {
+    response = await fetch(getEndpoint(), {
       method: "POST",
       headers,
       body: JSON.stringify({ query, variables }),
