@@ -2,7 +2,7 @@ import {
   SuiWalletAdapter,
   KwesPayError,
   SuiTransactionResult,
-} from "../../types";
+} from "../../types/index.js";
 
 const SUI_CLOCK_ID = "0x6";
 

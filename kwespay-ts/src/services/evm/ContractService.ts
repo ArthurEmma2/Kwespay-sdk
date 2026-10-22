@@ -213,7 +213,7 @@ export class ContractService {
     const approveData = encodeFunctionData({
       abi: ERC20_ABI,
       functionName: "approve",
-      args: [ensure0x(contractAddress), amount * 2n],
+      args: [ensure0x(contractAddress), amount],
     });
 
     const gasParams = await this.getGasParams(chainId);

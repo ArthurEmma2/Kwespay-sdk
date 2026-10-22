@@ -16,7 +16,9 @@ export type SuiNetworkKey = "suiTestnet" | "suiMainnet";
 
 export type StellarNetworkKey = "stellarTestnet" | "stellarMainnet";
 
-export type NetworkKey = EVMNetworkKey | SuiNetworkKey | StellarNetworkKey;
+export type NearNetworkKey = "nearTestnet";
+
+export type NetworkKey = EVMNetworkKey | SuiNetworkKey | StellarNetworkKey | NearNetworkKey | (string & {});
 
 export type TokenSymbol =
   | "ETH"
@@ -34,6 +36,7 @@ export type TokenSymbol =
   | "SUI"
   | "MEZO"
   | "XLM"
+  | "NEAR"
   | (string & {});
 
 export interface EIP1193Provider {
@@ -57,8 +60,8 @@ export interface SuiTransactionResult {
 }
 
 export interface SuiNetworkConfig {
-  packageId: string;
-  registryObjectId: string;
+  packageId?: string;
+  registryObjectId?: string;
 }
 
 /**
@@ -74,8 +77,44 @@ export interface StellarWalletAdapter {
 }
 
 export interface StellarNetworkConfig {
-  contractId: string;
-  /** Defaults to the public Soroban RPC endpoint for the network if omitted. */
+  contractId?: string;
+  rpcUrl?: string;
+}
+
+export interface NearFunctionCallAction {
+  type: "FunctionCall";
+  params: {
+    methodName: string;
+    args: Record<string, unknown>;
+    gas: string;
+    deposit: string;
+  };
+}
+
+export interface NearExecutionStatus {
+  SuccessValue?: string;
+  SuccessReceiptId?: string;
+  Failure?: unknown;
+}
+
+export interface NearTransactionOutcome {
+  status?: NearExecutionStatus | string;
+  transaction?: { hash?: string };
+  transaction_outcome?: { id?: string };
+  receipts_outcome?: Array<{ id?: string; outcome?: { status?: NearExecutionStatus | string } }>;
+}
+
+export interface NearWalletAdapter {
+  getAccounts(): Promise<Array<{ accountId: string }>>;
+  signAndSendTransaction(params: {
+    signerId?: string;
+    receiverId: string;
+    actions: NearFunctionCallAction[];
+  }): Promise<NearTransactionOutcome | void>;
+}
+
+export interface NearNetworkConfig {
+  contractId?: string;
   rpcUrl?: string;
 }
 
@@ -83,16 +122,65 @@ export interface KwesPayConfig {
   apiKey: string;
   suiNetworks?: Partial<Record<SuiNetworkKey, SuiNetworkConfig>>;
   stellarNetworks?: Partial<Record<StellarNetworkKey, StellarNetworkConfig>>;
+  nearNetworks?: Partial<Record<NearNetworkKey, NearNetworkConfig>>;
   graphqlEndpoint?: string;
 }
 
 export interface QuoteParams {
-  vendorIdentifier: string;
+  vendorIdentifier?: string;
   fiatAmount: number;
   fiatCurrency?: string;
   cryptoCurrency: TokenSymbol;
   network: NetworkKey;
   payerWalletAddress?: string;
+  orderId?: string;
+}
+
+export interface PaymentToken {
+  symbol: string;
+  displaySymbol: string;
+  name: string;
+  logoUrl: string | null;
+  address: string;
+  decimals: number;
+  isNative: boolean;
+}
+
+export interface PaymentNetwork {
+  key: string;
+  name: string;
+  environment: "mainnet" | "testnet";
+  ecosystem: "evm" | "sui" | "stellar" | "near";
+  chainId: number | null;
+  contractAddress: string | null;
+  registryObjectId: string | null;
+  platformFeeBps: number;
+  explorerTxUrl: string | null;
+  publicRpcUrl: string | null;
+  nativeSymbol: string | null;
+  networkPassphrase: string | null;
+  logoUrl: string | null;
+  tokens: PaymentToken[];
+}
+
+export interface ResolvedChain {
+  contractAddress: string;
+  registryObjectId?: string;
+  rpcUrl?: string;
+  networkPassphrase?: string;
+}
+
+export interface CreateTransactionParams {
+  quote: QuoteResult;
+  vendorIdentifier?: string;
+  payerWalletAddress: string;
+}
+
+export interface CheckBalanceParams {
+  quote: QuoteResult;
+  payerWalletAddress: string;
+  provider?: EIP1193Provider;
+  rpcUrl?: string;
 }
 
 export interface QuoteResult {
@@ -120,6 +208,7 @@ export interface TransactionPayload {
    * For EVM: Unix timestamp (seconds).
    * For Sui: Unix timestamp (seconds).
    * For Stellar: a ledger sequence number, NOT a Unix timestamp.
+   * For NEAR: Unix timestamp (seconds); the contract receives deadline × 1000.
    */
   deadline: number;
   transactionReference: string;
@@ -127,6 +216,10 @@ export interface TransactionPayload {
   network: NetworkKey;
   vendorIdentifier: string;
   vendorSuiWallet: string | null;
+  vendorWallet?: string | null;
+  payerWalletAddress?: string;
+  contractAddress?: string;
+  registryObjectId?: string;
 }
 
 export type TransactionStatus =
@@ -171,7 +264,102 @@ export interface StellarPayParams {
   onStatus?: (title: string, detail: string) => void;
 }
 
-export type PayParams = EVMPayParams | SuiPayParams | StellarPayParams;
+export interface NearPayParams {
+  wallet: NearWalletAdapter;
+  payload: TransactionPayload;
+  contractId?: string;
+  onStatus?: (title: string, detail: string) => void;
+}
+
+export type PayParams = EVMPayParams | SuiPayParams | StellarPayParams | NearPayParams;
+
+export interface CheckoutParams {
+  amount: number;
+  currency?: string;
+  token: TokenSymbol;
+  network: NetworkKey;
+  orderId?: string;
+  vendorIdentifier?: string;
+  provider?: EIP1193Provider;
+  wallet?: SuiWalletAdapter | StellarWalletAdapter | NearWalletAdapter;
+  payerWalletAddress?: string;
+  onStatus?: (title: string, detail: string) => void;
+}
+
+export interface CheckoutResult {
+  paid: boolean;
+  status: TransactionStatus;
+  transactionReference: string;
+  txHash: string;
+  orderId: string | null;
+  network: NetworkKey;
+  token: string;
+  cryptoAmount: number;
+}
+
+export interface VerifyPaymentOptions {
+  amount: number;
+  currency: string;
+  orderId?: string;
+}
+
+export type WebhookEventType =
+  | "payment.succeeded"
+  | "payment.underpaid"
+  | "payment.failed"
+  | "payment.expired"
+  | "payment.refunded"
+  | "webhook.test";
+
+export interface WebhookPaymentData {
+  transactionReference: string;
+  orderReference: string | null;
+  quoteReference: string | null;
+  status: TransactionStatus;
+  vendorIdentifier: string | null;
+  fiatAmount: string | null;
+  fiatCurrency: string | null;
+  token: string;
+  network: string | null;
+  tokenDecimals: number | null;
+  amountBaseUnits: string;
+  totalBaseUnits: string | null;
+  receivedBaseUnits: string | null;
+  blockchainHash: string | null;
+  initiatedAt: string | null;
+  statusChangedAt: string | null;
+}
+
+export interface WebhookEvent<T = WebhookPaymentData> {
+  id: string;
+  object: "event";
+  type: WebhookEventType;
+  apiVersion: string;
+  createdAt: string;
+  environment: "mainnet" | "testnet";
+  data: T;
+}
+
+export interface VerifyWebhookOptions {
+  toleranceSeconds?: number;
+  now?: number;
+}
+
+export interface VerifyPaymentResult {
+  paid: boolean;
+  reason: string | null;
+  transactionReference: string;
+  status: TransactionStatus;
+  orderId: string | null;
+  fiatAmount: number | null;
+  fiatCurrency: string | null;
+  token: string;
+  cryptoAmount: number;
+  network: string | null;
+  txHash: string | null;
+  vendorIdentifier: string;
+  initiatedAt: string;
+}
 
 export interface PaymentResult {
   txHash: string;
@@ -189,7 +377,7 @@ export interface PaymentResult {
 export interface NetworkTokenConfig {
   network: NetworkKey;
   tokens: TokenSymbol[];
-  family: "evm" | "sui" | "stellar";
+  family: "evm" | "sui" | "stellar" | "near";
 }
 
 /**
@@ -213,6 +401,7 @@ export interface MerchantConfig {
   hasEvmWallet: boolean;
   hasSuiWallet: boolean;
   hasStellarWallet: boolean;
+  hasNearWallet: boolean;
 }
 
 export interface VendorInfo {
@@ -275,6 +464,7 @@ export type KwesPayErrorCode =
   | "MERCHANT_NOT_FOUND"
   | "NETWORK_NOT_ENABLED"
   | "TOKEN_NOT_SUPPORTED"
+  | "WEBHOOK_SIGNATURE_INVALID"
   | "UNKNOWN";
 
 export class KwesPayError extends Error {

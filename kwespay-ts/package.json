@@ -1,6 +1,6 @@
 {
   "name": "@kwespay/client",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "description": "TypeScript SDK for KwesPay — accept crypto payments in three steps.",
   "author": "KwesPay",
   "license": "MIT",
@@ -27,7 +27,8 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit -p tsconfig.esm.json",
     "prepublishOnly": "npm run build",
-    "build:browser": "rollup -c rollup.config.js"
+    "build:browser": "rollup -c rollup.config.js",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^29.0.2",
@@ -57,6 +58,8 @@
     "erc20",
     "stellar",
     "soroban",
-    "graphql"
+    "graphql",
+    "near",
+    "nep-141"
   ]
 }

@@ -2,29 +2,11 @@ import {
   KwesPayError,
   SuiWalletAdapter,
   SuiPayParams,
+  ResolvedChain,
   PaymentResult,
 } from "../../types/index.js";
 import { SuiContractService } from "./SuiContractService.js";
-import { resolveSuiConfig } from "../../internal/config.js";
 import { assertSuiVendorWallet } from "../../utils/address.js";
-
-const SUI_RPC_URLS: Record<string, string> = {
-  suiTestnet: "https://fullnode.testnet.sui.io",
-  suiMainnet: "https://fullnode.mainnet.sui.io",
-};
-
-function resolveRpcUrl(network: string): string {
-  const url = SUI_RPC_URLS[network];
-  if (!url) {
-    throw new KwesPayError(
-      `Unknown Sui network "${network}". Expected one of: ${Object.keys(
-        SUI_RPC_URLS
-      ).join(", ")}.`,
-      "CONTRACT_ERROR"
-    );
-  }
-  return url;
-}
 
 function computeFeeBaseUnits(
   totalBaseUnits: string,
@@ -110,7 +92,7 @@ export class SuiPaymentService {
     );
   }
 
-  async pay(params: SuiPayParams): Promise<PaymentResult> {
+  async pay(params: SuiPayParams, chain: ResolvedChain): Promise<PaymentResult> {
     const { payload, onStatus } = params;
 
     this.validatePayload(payload);
@@ -120,47 +102,13 @@ export class SuiPaymentService {
 
     const vendorAddress = payload.vendorSuiWallet!;
 
-    let packageId: string;
-    let registryObjectId: string;
+    const packageId = chain.contractAddress;
+    const registryObjectId = chain.registryObjectId;
+    const rpcUrl = chain.rpcUrl;
 
-    if (params.registryObjectId) {
-      registryObjectId = params.registryObjectId;
-      try {
-        const cfg = resolveSuiConfig(payload.network);
-        packageId = cfg.packageId;
-      } catch {
-        throw new KwesPayError(
-          `No package ID configured for network "${payload.network}". ` +
-            "Pass suiNetworks in your KwesPayConfig.",
-          "CONTRACT_ERROR"
-        );
-      }
-    } else {
-      try {
-        const cfg = resolveSuiConfig(payload.network);
-        packageId = cfg.packageId;
-        registryObjectId = cfg.registryObjectId;
-      } catch {
-        throw new KwesPayError(
-          `Sui network "${payload.network}" is not configured. ` +
-            "Pass suiNetworks: { suiTestnet: { packageId, registryObjectId } } in your KwesPayConfig.",
-          "CONTRACT_ERROR"
-        );
-      }
-    }
-
-    if (!packageId!) {
+    if (!packageId || !registryObjectId || !rpcUrl) {
       throw new KwesPayError(
-        `No package ID configured for network "${payload.network}". ` +
-          "Set packageId in suiNetworks in your KwesPayConfig.",
-        "CONTRACT_ERROR"
-      );
-    }
-
-    if (!registryObjectId!) {
-      throw new KwesPayError(
-        `No registry object ID configured for network "${payload.network}". ` +
-          "Set registryObjectId in suiNetworks in your KwesPayConfig.",
+        `Sui network "${payload.network}" is not published by the KwesPay API.`,
         "CONTRACT_ERROR"
       );
     }
@@ -172,9 +120,6 @@ export class SuiPaymentService {
 
     // deadline from the backend is Unix seconds; the Move contract expects ms.
     const expiresAtMs = payload.deadline! * 1000;
-
-    // RPC URL is resolved entirely from the network key — no caller input needed.
-    const rpcUrl = resolveRpcUrl(payload.network);
 
     const { txHash, blockNumber } = await this.contractService.createPayment(
       {

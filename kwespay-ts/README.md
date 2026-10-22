@@ -45,30 +45,38 @@ pnpm add @kwespay/client
 
 ## Quick Start
 
+In the browser, one call prices, signs, pays and waits for confirmation:
+
 ```typescript
 import { KwesPayClient } from "@kwespay/client";
 
 const client = new KwesPayClient({ apiKey: "your-api-key" });
 
-const payload = await client.quote({
-  vendorIdentifier: "your-vendor-id",
-  fiatAmount: 10,
-  fiatCurrency: "USD",
-  cryptoCurrency: "USDC",
+const result = await client.checkout({
+  amount: 10,
+  currency: "USD",
+  token: "USDC",
   network: "base",
-  payerWalletAddress: "0xabc...",
-});
-
-const result = await client.pay({
+  orderId: "A-1042",
   provider: window.ethereum,
-  payload,
-  onStatus: (title, detail) => console.log(title, detail),
 });
-
-console.log(result.txHash);
 ```
 
-The example above hardcodes `payerWalletAddress`. In a real app you get that address by connecting to the user's wallet first — see [Connecting a Wallet](#connecting-a-wallet) below for the full flow.
+On your server, one call confirms the order before you fulfil it:
+
+```typescript
+const check = await client.verifyPayment(result.transactionReference, {
+  orderId: "A-1042",
+  amount: 10,
+  currency: "USD",
+});
+
+if (check.paid) await markOrderPaid("A-1042");
+```
+
+`verifyPayment` returns `paid: true` only when KwesPay confirmed the payment on-chain and it matches the order, amount and currency. Otherwise `reason` explains why. The vendor ID is optional when your API key belongs to one merchant.
+
+For Stellar or Sui, pass `wallet` instead of `provider`. See [Connecting a Wallet](#connecting-a-wallet) and the step-by-step `quote()` and `pay()` methods below for full control.
 
 ---
 
@@ -84,12 +92,12 @@ Everything else — chain switching, ERC-20 approval, transaction submission —
 
 ### What triggers a wallet popup
 
-| Step | When it happens | Skipped when |
-|---|---|---|
-| Connect | `eth_requestAccounts` is called | Wallet already connected to your site |
-| Network switch | Wallet is on the wrong chain for `payload.network` | Wallet already on the correct chain |
-| Token approval | Paying with an ERC-20 and current allowance < amount | Paying with the native coin, or allowance is already sufficient |
-| Payment transaction | Always, right before funds move | Never |
+| Step                | When it happens                                      | Skipped when                                                    |
+| ------------------- | ---------------------------------------------------- | --------------------------------------------------------------- |
+| Connect             | `eth_requestAccounts` is called                    | Wallet already connected to your site                           |
+| Network switch      | Wallet is on the wrong chain for`payload.network`  | Wallet already on the correct chain                             |
+| Token approval      | Paying with an ERC-20 and current allowance < amount | Paying with the native coin, or allowance is already sufficient |
+| Payment transaction | Always, right before funds move                      | Never                                                           |
 
 ### Vanilla JavaScript
 
@@ -192,6 +200,7 @@ Works with plain `<script type="module">`, Vite, webpack, or any other bundler �
 ```
 
 > **No bundler?** Load the pre-built browser bundle directly from a CDN:
+>
 > ```html
 > <script src="https://cdn.jsdelivr.net/npm/@kwespay/client/dist/browser/kwespay.js"></script>
 > <script>
@@ -199,7 +208,8 @@ Works with plain `<script type="module">`, Vite, webpack, or any other bundler �
 >   // same connectWallet() / payNow() code as above, using `KwesPay.KwesPayError`
 > </script>
 > ```
-> The CDN build only covers EVM networks. Sui and Stellar payments dynamically load `@mysten/sui` / `@stellar/stellar-sdk`, which requires a bundler that can resolve npm packages — see [Non-EVM wallets](#non-evm-wallets-sui--stellar) below.
+>
+> The CDN build only covers EVM networks. Sui and Stellar payments dynamically load `@mysten/sui` / `@stellar/stellar-sdk`, which requires a bundler that can resolve npm packages — see [Non-EVM wallets](#non-evm-wallets-sui--stellar--near) below.
 
 ### React
 
@@ -319,7 +329,7 @@ declare global {
 }
 ```
 
-### Non-EVM wallets (Sui / Stellar)
+### Non-EVM wallets (Sui / Stellar / NEAR)
 
 Sui and Stellar use different wallet interfaces — `SuiWalletAdapter` and `StellarWalletAdapter` — instead of `window.ethereum`. You'd typically get these from `@mysten/wallet-standard`-compatible wallets (e.g. Sui Wallet) or `@stellar/freighter-api` (e.g. Freighter), then pass the adapter as `wallet` instead of `provider`:
 
@@ -333,6 +343,47 @@ const result = await client.pay({ wallet: stellarWalletAdapter, payload, onStatu
 
 `client.pay()` picks the right flow automatically based on `payload.network` — you never need to branch on network type yourself.
 
+### NEAR
+
+NEAR payments take a `NearWalletAdapter`: any object with `getAccounts()` and `signAndSendTransaction()`. That's the shape of a [`@near-wallet-selector`](https://github.com/near/wallet-selector) wallet. Since wallet-selector v10 expects `near-api-js` actions, wrap the wallet once with `internalActionToNaj`:
+
+```typescript
+import { KwesPayClient, type NearWalletAdapter } from "@kwespay/client";
+import { setupWalletSelector, internalActionToNaj } from "@near-wallet-selector/core";
+import { setupMeteorWallet } from "@near-wallet-selector/meteor-wallet";
+
+const selector = await setupWalletSelector({ network: "testnet", modules: [setupMeteorWallet()] });
+const wallet = await selector.wallet("meteor-wallet");
+const [{ accountId }] = await wallet.signIn({ contractId: "pay.kwespay.testnet", methodNames: [] });
+
+const nearWallet: NearWalletAdapter = {
+  getAccounts: async () => [{ accountId }],
+  signAndSendTransaction: (tx) => wallet.signAndSendTransaction({ ...tx, actions: tx.actions.map(internalActionToNaj) }),
+};
+
+const client = new KwesPayClient({ apiKey: "YOUR_API_KEY", graphqlEndpoint: "https://api.testnet.kwespay.xyz/graphql" });
+
+const result = await client.checkout({
+  amount: 50,
+  currency: "GHS",
+  token: "USDT",
+  network: "nearTestnet",
+  orderId: "A-1042",
+  wallet: nearWallet,
+});
+```
+
+What happens on NEAR:
+
+- **Native NEAR** calls `pay_near` on the KwesPay contract with the total attached.
+- **Stablecoins** (USDC, USDC.e, USDT) call `ft_transfer_call` on the token, which hands the signed terms to the KwesPay contract in the same transaction.
+- The backend signs the payment for one customer account. `pay()` refuses a wallet signed in as a different account before anything is sent.
+- `pay()` checks the customer's balance over public RPC first, and reports a refunded transfer as `CONTRACT_ERROR` with the contract's reason (for example an expired deadline).
+- The KwesPay fee on NEAR is 1%. As on every chain, read it as `totalBaseUnits − amountBaseUnits`.
+- `deadline` is in seconds; the contract receives `deadline × 1000` milliseconds.
+
+The customer must be storage-registered on the token they pay with, which is true for any account that already holds it.
+
 ---
 
 ## API Reference
@@ -341,9 +392,34 @@ const result = await client.pay({ wallet: stellarWalletAdapter, payload, onStatu
 
 Creates a new client instance.
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `config.apiKey` | `string` | Yes | Your KwesPay API key |
+| Parameter         | Type       | Required | Description          |
+| ----------------- | ---------- | -------- | -------------------- |
+| `config.apiKey` | `string` | Yes      | Your KwesPay API key |
+
+---
+
+### `client.checkout(params)`
+
+Runs the whole payment: quote, balance check, signed transaction, wallet approval and payment, then waits for KwesPay's final status.
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `amount` | Yes | Price in fiat |
+| `currency` | No | ISO 4217 code. Default `USD` |
+| `token` | Yes | Token to pay with |
+| `network` | Yes | Network key |
+| `orderId` | No | Your order ID, checked by `verifyPayment()` |
+| `provider` / `wallet` | Yes | EIP-1193 provider for EVM, wallet adapter for Stellar and Sui |
+| `vendorIdentifier` | No | Only needed when the key can access more than one merchant |
+| `onStatus` | No | `(title, detail) => void` progress callback |
+
+**Returns** — `{ paid, status, transactionReference, txHash, orderId, network, token, cryptoAmount }`.
+
+---
+
+### `client.verifyPayment(transactionReference, { amount, currency, orderId? })`
+
+For your server. Returns `{ paid, reason, status, orderId, fiatAmount, fiatCurrency, token, cryptoAmount, network, txHash, vendorIdentifier, initiatedAt }`. `amount` and `currency` are required so a cheaper payment can never be accepted for the order.
 
 ---
 
@@ -381,14 +457,14 @@ const payload = await client.quote({
 });
 ```
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `vendorIdentifier` | `string` | Yes | Your vendor UUID from [app.kwespay.xyz](https://app.kwespay.xyz) |
-| `fiatAmount` | `number` | Yes | Amount in fiat to charge |
-| `fiatCurrency` | `string` | No | ISO 4217 fiat currency code — see [Supported Fiat Currencies](#supported-fiat-currencies). Defaults to `"USD"` |
-| `cryptoCurrency` | `TokenSymbol` | Yes | Token to accept |
-| `network` | `NetworkKey` | Yes | Target blockchain network |
-| `payerWalletAddress` | `string` | Yes | The payer's wallet address |
+| Parameter              | Type            | Required | Description                                                                                                     |
+| ---------------------- | --------------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `vendorIdentifier`   | `string`      | Yes      | Your vendor UUID from[app.kwespay.xyz](https://app.kwespay.xyz)                                                  |
+| `fiatAmount`         | `number`      | Yes      | Amount in fiat to charge                                                                                        |
+| `fiatCurrency`       | `string`      | No       | ISO 4217 fiat currency code — see[Supported Fiat Currencies](#supported-fiat-currencies). Defaults to `"USD"` |
+| `cryptoCurrency`     | `TokenSymbol` | Yes      | Token to accept                                                                                                 |
+| `network`            | `NetworkKey`  | Yes      | Target blockchain network                                                                                       |
+| `payerWalletAddress` | `string`      | Yes      | The payer's wallet address                                                                                      |
 
 **Returns** — `TransactionPayload`
 
@@ -408,23 +484,23 @@ const result = await client.pay({
 });
 ```
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `provider` | `EIP1193Provider` | Yes | Wallet provider |
-| `payload` | `TransactionPayload` | Yes | Payload from `client.quote()` |
-| `onStatus` | `(title, detail) => void` | No | Progress callback |
+| Parameter    | Type                        | Required | Description                    |
+| ------------ | --------------------------- | -------- | ------------------------------ |
+| `provider` | `EIP1193Provider`         | Yes      | Wallet provider                |
+| `payload`  | `TransactionPayload`      | Yes      | Payload from`client.quote()` |
+| `onStatus` | `(title, detail) => void` | No       | Progress callback              |
 
 The `onStatus` callback fires at each stage of the payment flow:
 
-| Title | Fired when |
-|---|---|
-| `Checking balance` | Verifying wallet has sufficient funds |
-| `Switching network` | Requesting network change in wallet |
-| `Checking approval` | Reading current ERC-20 allowance |
-| `Approve token` | Requesting ERC-20 approval from user |
-| `Waiting for approval` | Approval tx is confirming on-chain |
-| `Confirm payment` | Requesting payment tx from user |
-| `Waiting for confirmation` | Payment tx is confirming on-chain |
+| Title                        | Fired when                            |
+| ---------------------------- | ------------------------------------- |
+| `Checking balance`         | Verifying wallet has sufficient funds |
+| `Switching network`        | Requesting network change in wallet   |
+| `Checking approval`        | Reading current ERC-20 allowance      |
+| `Approve token`            | Requesting ERC-20 approval from user  |
+| `Waiting for approval`     | Approval tx is confirming on-chain    |
+| `Confirm payment`          | Requesting payment tx from user       |
+| `Waiting for confirmation` | Payment tx is confirming on-chain     |
 
 **Returns** — `PaymentResult`
 
@@ -467,23 +543,28 @@ interface TransactionStatusResult {
 
 ## Supported Networks
 
-| Key | Network |
-|---|---|
-| `ethereum` | Ethereum Mainnet |
-| `sepolia` | Ethereum Sepolia (testnet) |
-| `base` | Base Mainnet |
-| `baseSepolia` | Base Sepolia (testnet) |
-| `polygon` | Polygon Mainnet |
-| `polygonAmoy` | Polygon Amoy (testnet) |
-| `lisk` | Lisk Mainnet |
-| `liskTestnet` | Lisk Testnet |
-| `MezoTestnet` | Mezo Testnet |
+| Key             | Network                    |
+| --------------- | -------------------------- |
+| `ethereum`    | Ethereum Mainnet           |
+| `sepolia`     | Ethereum Sepolia (testnet) |
+| `base`        | Base Mainnet               |
+| `baseSepolia` | Base Sepolia (testnet)     |
+| `polygon`     | Polygon Mainnet            |
+| `polygonAmoy` | Polygon Amoy (testnet)     |
+| `lisk`        | Lisk Mainnet               |
+| `liskTestnet` | Lisk Testnet               |
+| `MezoTestnet` | Mezo Testnet               |
+| `stellarTestnet` | Stellar Testnet         |
+| `suiTestnet`  | Sui Testnet                |
+| `nearTestnet` | NEAR Testnet               |
 
 ---
 
 ## Supported Tokens
 
-`ETH`, `MATIC`, `USDT`, `USDC`, `USDC.E`, `USDBC`, `DAI`, `LSK`, `MUSD`
+`ETH`, `MATIC`, `USDT`, `USDC`, `USDC.E`, `USDBC`, `DAI`, `LSK`, `MUSD`, `XLM`, `SUI`, `NEAR`
+
+On `nearTestnet`: `NEAR` (native), `USDC` (Circle, `3e2210e1…b8af`), `USDC.E` (`usdc.fakes.testnet`) and `USDT` (`usdt.fakes.testnet`).
 
 Custom token addresses are also accepted as a plain string.
 
@@ -493,14 +574,14 @@ Custom token addresses are also accepted as a plain string.
 
 `fiatAmount`/`fiatCurrency` are quoted server-side against live FX rates, so `fiatCurrency` accepts any standard ISO 4217 code — it isn't limited to the list below. These are the currencies KwesPay actively supports for African markets:
 
-| Code | Currency | Country |
-|---|---|---|
-| `USD` | US Dollar | — (default) |
-| `NGN` | Naira | Nigeria |
-| `GHS` | Cedi | Ghana |
-| `ZAR` | Rand | South Africa |
-| `KES` | Shilling | Kenya |
-| `ZWG` | Zimbabwe Gold (ZiG) | Zimbabwe |
+| Code    | Currency            | Country      |
+| ------- | ------------------- | ------------ |
+| `USD` | US Dollar           | — (default) |
+| `NGN` | Naira               | Nigeria      |
+| `GHS` | Cedi                | Ghana        |
+| `ZAR` | Rand                | South Africa |
+| `KES` | Shilling            | Kenya        |
+| `ZWG` | Zimbabwe Gold (ZiG) | Zimbabwe     |
 
 ```typescript
 const payload = await client.quote({
@@ -551,20 +632,20 @@ try {
 
 ### Error Codes
 
-| Code | Description |
-|---|---|
-| `INVALID_KEY` | API key is missing, invalid, or inactive |
-| `QUOTE_EXPIRED` | Quote TTL has elapsed |
-| `QUOTE_USED` | Quote has already been used for a transaction |
-| `QUOTE_NOT_FOUND` | Quote ID does not exist |
-| `TRANSACTION_FAILED` | Payload is missing required fields |
-| `WALLET_REJECTED` | User rejected the transaction in their wallet |
-| `APPROVAL_REJECTED` | User rejected the ERC-20 approval in their wallet |
-| `INSUFFICIENT_BALANCE` | Wallet lacks funds or gas |
-| `CONTRACT_ERROR` | On-chain call reverted or receipt timed out |
-| `WRONG_NETWORK` | Wallet is on the wrong chain and could not switch |
-| `NETWORK_ERROR` | HTTP or connectivity failure reaching the API |
-| `UNKNOWN` | Unclassified server-side error |
+| Code                     | Description                                       |
+| ------------------------ | ------------------------------------------------- |
+| `INVALID_KEY`          | API key is missing, invalid, or inactive          |
+| `QUOTE_EXPIRED`        | Quote TTL has elapsed                             |
+| `QUOTE_USED`           | Quote has already been used for a transaction     |
+| `QUOTE_NOT_FOUND`      | Quote ID does not exist                           |
+| `TRANSACTION_FAILED`   | Payload is missing required fields                |
+| `WALLET_REJECTED`      | User rejected the transaction in their wallet     |
+| `APPROVAL_REJECTED`    | User rejected the ERC-20 approval in their wallet |
+| `INSUFFICIENT_BALANCE` | Wallet lacks funds or gas                         |
+| `CONTRACT_ERROR`       | On-chain call reverted or receipt timed out       |
+| `WRONG_NETWORK`        | Wallet is on the wrong chain and could not switch |
+| `NETWORK_ERROR`        | HTTP or connectivity failure reaching the API     |
+| `UNKNOWN`              | Unclassified server-side error                    |
 
 ---
 

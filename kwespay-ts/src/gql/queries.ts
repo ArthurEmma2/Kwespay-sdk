@@ -35,10 +35,13 @@ export const GQL_GET_VENDOR = /* GraphQL */ `
       hasEvmWallet
       hasSuiWallet
       hasStellarWallet
+      hasNearWallet
       activeStatus
     }
   }
 `;
+
+export const GQL_GET_VENDOR_LEGACY = GQL_GET_VENDOR.replace(/\n\s*hasNearWallet/, "");
 
 export const GQL_CREATE_QUOTE = /* GraphQL */ `
   mutation CreateQuote($input: CreateQuoteInput!) {
@@ -72,6 +75,10 @@ export const GQL_CREATE_TRANSACTION = /* GraphQL */ `
       chainId
       deadline
       expiresAt
+      vendorIdentifier
+      vendorWallet
+      contractAddress
+      registryObjectId
       transaction {
         transactionReference
         transactionStatus
@@ -80,6 +87,38 @@ export const GQL_CREATE_TRANSACTION = /* GraphQL */ `
           suiWalletAddress
         }
       }
+    }
+  }
+`;
+
+export const GQL_CREATE_TRANSACTION_LEGACY = GQL_CREATE_TRANSACTION.replace(/\n\s*contractAddress\n\s*registryObjectId/, "");
+
+export const GQL_VERIFY_PAYMENT = /* GraphQL */ `
+  query VerifyPayment(
+    $transactionReference: String!
+    $expectedAmount: Float!
+    $expectedCurrency: String!
+    $orderReference: String
+  ) {
+    verifyPayment(
+      transactionReference: $transactionReference
+      orderReference: $orderReference
+      expectedAmount: $expectedAmount
+      expectedCurrency: $expectedCurrency
+    ) {
+      paid
+      reason
+      transactionReference
+      transactionStatus
+      orderReference
+      fiatAmount
+      fiatCurrency
+      cryptoCurrency
+      displayAmount
+      blockchainNetwork
+      blockchainHash
+      vendorIdentifier
+      initiatedAt
     }
   }
 `;
@@ -112,6 +151,35 @@ export const GQL_SUBMIT_TRANSACTION_HASH = /* GraphQL */ `
       transactionStatus
       blockchainHash
       blockchainNetwork
+    }
+  }
+`;
+
+export const GQL_PAYMENT_NETWORKS = /* GraphQL */ `
+  query PaymentNetworks {
+    paymentNetworks {
+      key
+      name
+      environment
+      ecosystem
+      chainId
+      contractAddress
+      registryObjectId
+      platformFeeBps
+      explorerTxUrl
+      publicRpcUrl
+      nativeSymbol
+      networkPassphrase
+      logoUrl
+      tokens {
+        symbol
+        displaySymbol
+        name
+        logoUrl
+        address
+        decimals
+        isNative
+      }
     }
   }
 `;
