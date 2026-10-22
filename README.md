@@ -209,7 +209,7 @@ Works with plain `<script type="module">`, Vite, webpack, or any other bundler �
 > </script>
 > ```
 >
-> The CDN build only covers EVM networks. Sui and Stellar payments dynamically load `@mysten/sui` / `@stellar/stellar-sdk`, which requires a bundler that can resolve npm packages — see [Non-EVM wallets](#non-evm-wallets-sui--stellar) below.
+> The CDN build only covers EVM networks. Sui and Stellar payments dynamically load `@mysten/sui` / `@stellar/stellar-sdk`, which requires a bundler that can resolve npm packages — see [Non-EVM wallets](#non-evm-wallets-sui--stellar--near) below.
 
 ### React
 
@@ -329,7 +329,7 @@ declare global {
 }
 ```
 
-### Non-EVM wallets (Sui / Stellar)
+### Non-EVM wallets (Sui / Stellar / NEAR)
 
 Sui and Stellar use different wallet interfaces — `SuiWalletAdapter` and `StellarWalletAdapter` — instead of `window.ethereum`. You'd typically get these from `@mysten/wallet-standard`-compatible wallets (e.g. Sui Wallet) or `@stellar/freighter-api` (e.g. Freighter), then pass the adapter as `wallet` instead of `provider`:
 
@@ -342,6 +342,47 @@ const result = await client.pay({ wallet: stellarWalletAdapter, payload, onStatu
 ```
 
 `client.pay()` picks the right flow automatically based on `payload.network` — you never need to branch on network type yourself.
+
+### NEAR
+
+NEAR payments take a `NearWalletAdapter`: any object with `getAccounts()` and `signAndSendTransaction()`. That's the shape of a [`@near-wallet-selector`](https://github.com/near/wallet-selector) wallet. Since wallet-selector v10 expects `near-api-js` actions, wrap the wallet once with `internalActionToNaj`:
+
+```typescript
+import { KwesPayClient, type NearWalletAdapter } from "@kwespay/client";
+import { setupWalletSelector, internalActionToNaj } from "@near-wallet-selector/core";
+import { setupMeteorWallet } from "@near-wallet-selector/meteor-wallet";
+
+const selector = await setupWalletSelector({ network: "testnet", modules: [setupMeteorWallet()] });
+const wallet = await selector.wallet("meteor-wallet");
+const [{ accountId }] = await wallet.signIn({ contractId: "pay.kwespay.testnet", methodNames: [] });
+
+const nearWallet: NearWalletAdapter = {
+  getAccounts: async () => [{ accountId }],
+  signAndSendTransaction: (tx) => wallet.signAndSendTransaction({ ...tx, actions: tx.actions.map(internalActionToNaj) }),
+};
+
+const client = new KwesPayClient({ apiKey: "YOUR_API_KEY", graphqlEndpoint: "https://api.testnet.kwespay.xyz/graphql" });
+
+const result = await client.checkout({
+  amount: 50,
+  currency: "GHS",
+  token: "USDT",
+  network: "nearTestnet",
+  orderId: "A-1042",
+  wallet: nearWallet,
+});
+```
+
+What happens on NEAR:
+
+- **Native NEAR** calls `pay_near` on the KwesPay contract with the total attached.
+- **Stablecoins** (USDC, USDC.e, USDT) call `ft_transfer_call` on the token, which hands the signed terms to the KwesPay contract in the same transaction.
+- The backend signs the payment for one customer account. `pay()` refuses a wallet signed in as a different account before anything is sent.
+- `pay()` checks the customer's balance over public RPC first, and reports a refunded transfer as `CONTRACT_ERROR` with the contract's reason (for example an expired deadline).
+- The KwesPay fee on NEAR is 1%. As on every chain, read it as `totalBaseUnits − amountBaseUnits`.
+- `deadline` is in seconds; the contract receives `deadline × 1000` milliseconds.
+
+The customer must be storage-registered on the token they pay with, which is true for any account that already holds it.
 
 ---
 
@@ -513,12 +554,17 @@ interface TransactionStatusResult {
 | `lisk`        | Lisk Mainnet               |
 | `liskTestnet` | Lisk Testnet               |
 | `MezoTestnet` | Mezo Testnet               |
+| `stellarTestnet` | Stellar Testnet         |
+| `suiTestnet`  | Sui Testnet                |
+| `nearTestnet` | NEAR Testnet               |
 
 ---
 
 ## Supported Tokens
 
-`ETH`, `MATIC`, `USDT`, `USDC`, `USDC.E`, `USDBC`, `DAI`, `LSK`, `MUSD`
+`ETH`, `MATIC`, `USDT`, `USDC`, `USDC.E`, `USDBC`, `DAI`, `LSK`, `MUSD`, `XLM`, `SUI`, `NEAR`
+
+On `nearTestnet`: `NEAR` (native), `USDC` (Circle, `3e2210e1…b8af`), `USDC.E` (`usdc.fakes.testnet`) and `USDT` (`usdt.fakes.testnet`).
 
 Custom token addresses are also accepted as a plain string.
 
