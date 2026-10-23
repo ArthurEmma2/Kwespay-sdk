@@ -4,6 +4,10 @@ TypeScript SDK for [KwesPay](https://www.kwespay.xyz/) — accept crypto payment
 
 All pricing, signing, and contract addresses are managed server-side. You initialise the client, request a quote, and execute the payment. Nothing else is required.
 
+- **Wallet payments** on EVM networks, Sui, Stellar and NEAR with one `checkout()` call.
+- **Pay from any chain, powered by [NEAR Intents](https://near-intents.org).** Customers holding XLM or BTC can pay a merchant who accepts USDC on Base with one transfer from any wallet or exchange. See [Pay with another asset](#pay-with-another-asset-near-intents).
+- **Server-side verification** with `verifyPayment()` and signed webhooks.
+
 ---
 
 ## Prerequisites
@@ -385,6 +389,8 @@ What happens on NEAR:
 The customer must be storage-registered on the token they pay with, which is true for any account that already holds it.
 
 ### Pay with another asset (NEAR Intents)
+
+*Powered by NEAR Intents.*
 
 Customers can pay a merchant who accepts USDC on Base with **XLM** or **BTC** instead. [NEAR Intents](https://near-intents.org) converts the payment and delivers USDC straight to the merchant's wallet. KwesPay checks the delivery on Base before it marks the order paid. The customer needs no wallet connection: they send one transfer from any wallet or exchange.
 
