@@ -416,6 +416,7 @@ if (config.crossChainNetworks.includes("base")) {
 - `options` lists each asset with its live price (`amountInFormatted`), estimated time and minimum. Options with `available: false` include a `reason`.
 - `onDeposit` gives you what to show the customer: the amount, the deposit address and, for XLM, a **memo that must be included**.
 - `refundAddress` is the customer's own address on the chain they pay from. If the conversion can't complete, the deposit is refunded there.
+- For XLM, pass a Stellar `wallet` (the same adapter as Stellar payments) instead of `refundAddress`: the SDK sends the deposit with the memo filled in and refunds to that wallet if needed.
 - `result` has the same shape as `checkout()`. Confirm the order on your server with `verifyPayment()`; webhooks work unchanged.
 - The lower-level steps are `payFromAnotherAsset()`, `getPaymentRoute()`, `pollPaymentRoute()` and `submitCrossChainDeposit()`.
 
