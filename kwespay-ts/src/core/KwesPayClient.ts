@@ -30,6 +30,15 @@ import {
   SuiWalletAdapter,
   StellarWalletAdapter,
   NearWalletAdapter,
+  CrossChainOption,
+  CrossChainOptionsResult,
+  CrossChainPriceParams,
+  CrossChainCheckoutParams,
+  CrossChainCheckoutResult,
+  PaymentRoute,
+  PayFromAnotherAssetParams,
+  PollPaymentRouteOptions,
+  KwesPayErrorCode,
 } from "../types/index.js";
 import { gqlRequest } from "../utils/gqlClient.js";
 import {
@@ -43,6 +52,11 @@ import {
   GQL_VERIFY_PAYMENT,
   GQL_SUBMIT_TRANSACTION_HASH,
   GQL_PAYMENT_NETWORKS,
+  GQL_VENDOR_CROSS_CHAIN,
+  GQL_CROSS_CHAIN_OPTIONS,
+  GQL_CREATE_CROSS_CHAIN_PAYMENT,
+  GQL_PAYMENT_ROUTE,
+  GQL_SUBMIT_CROSS_CHAIN_DEPOSIT,
 } from "../gql/queries.js";
 import { ENDPOINT, isSuiNetwork, isStellarNetwork, isNearNetwork } from "../internal/config.js";
 import { PaymentService } from "../services/evm/PaymentService.js";
@@ -67,6 +81,60 @@ async function getVendorRequest(endpoint: string, vendorIdentifier: string): Pro
     }
   }
   return gqlRequest<RawGetVendor>(endpoint, GQL_GET_VENDOR_LEGACY, { vendorIdentifier });
+}
+
+const ROUTE_FINAL = new Set(["settled", "refunded", "expired"]);
+const PAID_STATUSES = new Set(["completed", "overpaid"]);
+
+function crossChainErrorCode(code: string | null | undefined): KwesPayErrorCode {
+  switch (code) {
+    case "QUOTE_EXPIRED":
+    case "QUOTE_USED":
+    case "QUOTE_NOT_FOUND":
+    case "AMOUNT_BELOW_MINIMUM":
+    case "INVALID_REFUND_ADDRESS":
+    case "NETWORK_NOT_ENABLED":
+    case "INVALID_KEY":
+      return code;
+    case "MERCHANT_UNAVAILABLE":
+      return "MERCHANT_NOT_FOUND";
+    case "ROUTE_UNSUPPORTED":
+    case "CROSS_CHAIN_DISABLED":
+    case "RECIPIENT_INVALID":
+    case "ONECLICK_UNAVAILABLE":
+    case "QUOTE_SIGNATURE_INVALID":
+    case "QUOTE_MISMATCH":
+      return "CROSS_CHAIN_UNAVAILABLE";
+    case "RATE_LIMITED":
+    case "UNAVAILABLE":
+      return "NETWORK_ERROR";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+function routeProgress(route: PaymentRoute): [string, string] {
+  const amount = `${route.amountInFormatted} ${route.originAsset}`;
+  switch (route.status) {
+    case "quoted":
+      return ["Waiting for deposit", `Send ${amount}${route.depositMemo ? ` with memo ${route.depositMemo}` : ""}`];
+    case "deposit_seen":
+      return ["Deposit received", `${amount} received. Converting to ${route.token}`];
+    case "processing":
+      return ["Converting", `Converting ${route.originAsset} to ${route.token} on ${route.network}`];
+    case "incomplete":
+      return ["Deposit too small", "The deposit was less than required and will be refunded"];
+    case "delivered":
+      return ["Confirming payment", `Verifying the ${route.token} payment on ${route.network}`];
+    case "settled":
+      return ["Payment complete", `The merchant received ${route.token} on ${route.network}`];
+    case "refunded":
+      return ["Refunded", route.refundReason ?? `The deposit was refunded to ${route.refundAddress}`];
+    case "expired":
+      return ["Expired", "No deposit was received in time"];
+    default:
+      return ["Processing", "The payment is taking longer than usual"];
+  }
 }
 
 async function createTransactionRequest(
@@ -376,7 +444,16 @@ export class KwesPayClient {
       );
     }
 
-    const networks = await this.getNetworks();
+    const [networks, crossChainNetworks] = await Promise.all([
+      this.getNetworks(),
+      gqlRequest<{ getVendor: { crossChainNetworks: string[] } | null }>(
+        this.endpoint,
+        GQL_VENDOR_CROSS_CHAIN,
+        { vendorIdentifier }
+      )
+        .then((d) => d.getVendor?.crossChainNetworks ?? [])
+        .catch(() => [] as string[]),
+    ]);
 
     return buildMerchantConfig(networks, {
       vendorIdentifier: vendor.vendorIdentifier,
@@ -387,6 +464,7 @@ export class KwesPayClient {
       hasSuiWallet: vendor.hasSuiWallet,
       hasStellarWallet: vendor.hasStellarWallet,
       hasNearWallet: vendor.hasNearWallet ?? false,
+      crossChainNetworks,
     });
   }
 
@@ -688,6 +766,169 @@ export class KwesPayClient {
         : `checkout() on "${network}" needs an EIP-1193 \`provider\`, e.g. window.ethereum.`,
       "WALLET_REJECTED"
     );
+  }
+
+  async getCrossChainOptions(
+    params: CrossChainPriceParams | { quote: QuoteResult }
+  ): Promise<CrossChainOptionsResult> {
+    const quote =
+      "quote" in params
+        ? params.quote
+        : await this.getQuote({
+            vendorIdentifier: params.vendorIdentifier,
+            fiatAmount: params.amount,
+            fiatCurrency: params.currency,
+            cryptoCurrency: params.token,
+            network: params.network,
+            orderId: params.orderId,
+          });
+    const data = await gqlRequest<{ crossChainOptions: CrossChainOption[] }>(
+      this.endpoint,
+      GQL_CROSS_CHAIN_OPTIONS,
+      { quoteId: Number(quote.quoteId) },
+      this.apiKey
+    );
+    return { quote, options: data.crossChainOptions };
+  }
+
+  async payFromAnotherAsset(params: PayFromAnotherAssetParams): Promise<PaymentRoute> {
+    const refundAddress = (params.refundAddress ?? "").trim();
+    if (!refundAddress) {
+      throw new KwesPayError(
+        "payFromAnotherAsset() needs the customer's refundAddress on the chain they pay from.",
+        "INVALID_REFUND_ADDRESS"
+      );
+    }
+    const data = await gqlRequest<{
+      createCrossChainPayment: {
+        success: boolean;
+        message: string;
+        code: string | null;
+        resumed: boolean;
+        route: PaymentRoute | null;
+      };
+    }>(
+      this.endpoint,
+      GQL_CREATE_CROSS_CHAIN_PAYMENT,
+      { input: { quoteId: Number(params.quoteId), originAsset: params.originAsset, refundAddress } },
+      this.apiKey
+    );
+    const r = data.createCrossChainPayment;
+    if (!r.success || !r.route) {
+      throw new KwesPayError(r.message || "The payment could not be started.", crossChainErrorCode(r.code));
+    }
+    return r.route;
+  }
+
+  async getPaymentRoute(transactionReference: string): Promise<PaymentRoute> {
+    const data = await gqlRequest<{ paymentRoute: PaymentRoute }>(
+      this.endpoint,
+      GQL_PAYMENT_ROUTE,
+      { transactionReference }
+    );
+    return data.paymentRoute;
+  }
+
+  async pollPaymentRoute(
+    transactionReference: string,
+    options: PollPaymentRouteOptions = {}
+  ): Promise<PaymentRoute> {
+    const { onRoute, intervalMs = 5000 } = options;
+    const deadline = Date.now() + (options.timeoutMs ?? 2 * 60 * 60 * 1000);
+    let last: PaymentRoute | null = null;
+    let lastKey = "";
+    for (;;) {
+      try {
+        const route = await this.getPaymentRoute(transactionReference);
+        last = route;
+        const key = `${route.status}:${route.transactionStatus}:${route.destinationTransaction?.hash ?? ""}`;
+        if (key !== lastKey) {
+          lastKey = key;
+          onRoute?.(route);
+        }
+        if (ROUTE_FINAL.has(route.status) || PAID_STATUSES.has(route.transactionStatus)) return route;
+      } catch (err) {
+        if (Date.now() >= deadline) throw err;
+      }
+      if (Date.now() >= deadline) {
+        if (last) return last;
+        throw new KwesPayError(
+          `Timed out waiting for payment route "${transactionReference}". Call getPaymentRoute() to check it.`,
+          "UNKNOWN"
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  async submitCrossChainDeposit(transactionReference: string, txHash: string): Promise<boolean> {
+    try {
+      const data = await gqlRequest<{ submitCrossChainDeposit: boolean }>(
+        this.endpoint,
+        GQL_SUBMIT_CROSS_CHAIN_DEPOSIT,
+        { transactionReference, txHash },
+        this.apiKey
+      );
+      return data.submitCrossChainDeposit;
+    } catch {
+      return false;
+    }
+  }
+
+  async checkoutFromAnotherAsset(params: CrossChainCheckoutParams): Promise<CrossChainCheckoutResult> {
+    const { onDeposit, onRoute, onStatus } = params;
+    let quote = params.quote;
+    if (!quote) {
+      if (params.amount == null || !params.token || !params.network) {
+        throw new KwesPayError(
+          "checkoutFromAnotherAsset() needs a quote, or amount, token and network.",
+          "UNKNOWN"
+        );
+      }
+      onStatus?.("Getting quote", `Pricing ${params.amount} ${params.currency ?? "USD"} in ${params.token}`);
+      quote = await this.getQuote({
+        vendorIdentifier: params.vendorIdentifier,
+        fiatAmount: params.amount,
+        fiatCurrency: params.currency,
+        cryptoCurrency: params.token,
+        network: params.network,
+        orderId: params.orderId,
+      });
+    }
+
+    onStatus?.("Preparing deposit", `Getting a ${params.originAsset} deposit address`);
+    const started = await this.payFromAnotherAsset({
+      quoteId: quote.quoteId,
+      originAsset: params.originAsset,
+      refundAddress: params.refundAddress,
+    });
+    onDeposit?.(started);
+    let reported = started.status;
+    onStatus?.(...routeProgress(started));
+
+    const route = await this.pollPaymentRoute(started.transactionReference, {
+      intervalMs: params.intervalMs,
+      timeoutMs: params.timeoutMs,
+      onRoute: (r) => {
+        onRoute?.(r);
+        if (r.status !== reported) {
+          reported = r.status;
+          onStatus?.(...routeProgress(r));
+        }
+      },
+    });
+
+    return {
+      paid: PAID_STATUSES.has(route.transactionStatus),
+      status: route.transactionStatus,
+      transactionReference: route.transactionReference,
+      txHash: route.destinationTransaction?.hash ?? "",
+      orderId: params.orderId ?? null,
+      network: route.network,
+      token: route.token,
+      cryptoAmount: quote.displayAmount,
+      route,
+    };
   }
 
   async getTransactionStatus(

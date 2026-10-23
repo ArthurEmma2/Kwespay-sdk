@@ -22,6 +22,7 @@ export function buildMerchantConfig(
     hasSuiWallet: boolean;
     hasStellarWallet: boolean;
     hasNearWallet: boolean;
+    crossChainNetworks?: string[];
   }
 ): MerchantConfig {
   const accepted = new Set(raw.acceptedCurrencies.map((t) => t.toUpperCase()));
@@ -59,5 +60,8 @@ export function buildMerchantConfig(
     hasSuiWallet: raw.hasSuiWallet,
     hasStellarWallet: raw.hasStellarWallet,
     hasNearWallet: raw.hasNearWallet,
+    crossChainNetworks: (raw.crossChainNetworks ?? []).filter((n) =>
+      networkTokenMap.some((entry) => entry.network === n && entry.family === "evm")
+    ) as NetworkKey[],
   };
 }

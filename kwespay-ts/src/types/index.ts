@@ -402,6 +402,7 @@ export interface MerchantConfig {
   hasSuiWallet: boolean;
   hasStellarWallet: boolean;
   hasNearWallet: boolean;
+  crossChainNetworks: NetworkKey[];
 }
 
 export interface VendorInfo {
@@ -465,7 +466,112 @@ export type KwesPayErrorCode =
   | "NETWORK_NOT_ENABLED"
   | "TOKEN_NOT_SUPPORTED"
   | "WEBHOOK_SIGNATURE_INVALID"
+  | "CROSS_CHAIN_UNAVAILABLE"
+  | "AMOUNT_BELOW_MINIMUM"
+  | "INVALID_REFUND_ADDRESS"
   | "UNKNOWN";
+
+export type CrossChainOriginAsset = "XLM" | "BTC" | (string & {});
+
+export interface CrossChainOption {
+  originAsset: CrossChainOriginAsset;
+  name: string;
+  chain: string;
+  chainName: string;
+  decimals: number;
+  available: boolean;
+  amountIn: string | null;
+  amountInFormatted: string | null;
+  amountInUsd: string | null;
+  timeEstimateSeconds: number | null;
+  minimumUsd: string;
+  needsMemo: boolean;
+  reason: string | null;
+  code: string | null;
+}
+
+export type PaymentRouteStatus =
+  | "quoted"
+  | "deposit_seen"
+  | "processing"
+  | "incomplete"
+  | "delivered"
+  | "settled"
+  | "refunded"
+  | "failed"
+  | "expired";
+
+export interface CrossChainTransaction {
+  hash: string;
+  explorerUrl: string | null;
+}
+
+export interface PaymentRoute {
+  routeId: string;
+  transactionReference: string;
+  transactionStatus: TransactionStatus;
+  status: PaymentRouteStatus;
+  originAsset: CrossChainOriginAsset;
+  originChain: string;
+  depositAddress: string;
+  depositMemo: string | null;
+  amountIn: string;
+  amountInFormatted: string;
+  amountOut: string;
+  network: NetworkKey;
+  token: TokenSymbol;
+  recipient: string;
+  refundAddress: string;
+  deadline: string;
+  fundableUntil: string;
+  timeEstimateSeconds: number | null;
+  originTransactions: CrossChainTransaction[];
+  destinationTransaction: CrossChainTransaction | null;
+  refundedAmount: string | null;
+  refundReason: string | null;
+  paidLate: boolean;
+}
+
+export interface PayFromAnotherAssetParams {
+  quoteId: number | string;
+  originAsset: CrossChainOriginAsset;
+  refundAddress: string;
+}
+
+export interface CrossChainPriceParams {
+  amount: number;
+  currency?: string;
+  token: TokenSymbol;
+  network: NetworkKey;
+  orderId?: string;
+  vendorIdentifier?: string;
+}
+
+export interface CrossChainOptionsResult {
+  quote: QuoteResult;
+  options: CrossChainOption[];
+}
+
+export interface CrossChainCheckoutParams extends Partial<CrossChainPriceParams> {
+  quote?: QuoteResult;
+  originAsset: CrossChainOriginAsset;
+  refundAddress: string;
+  onDeposit?: (route: PaymentRoute) => void;
+  onRoute?: (route: PaymentRoute) => void;
+  onStatus?: (title: string, detail: string) => void;
+  intervalMs?: number;
+  timeoutMs?: number;
+}
+
+export interface CrossChainCheckoutResult extends CheckoutResult {
+  route: PaymentRoute;
+}
+
+export interface PollPaymentRouteOptions {
+  onRoute?: (route: PaymentRoute) => void;
+  intervalMs?: number;
+  timeoutMs?: number;
+}
 
 export class KwesPayError extends Error {
   readonly code: KwesPayErrorCode;

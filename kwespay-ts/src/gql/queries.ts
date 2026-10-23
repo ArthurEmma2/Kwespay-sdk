@@ -183,3 +183,82 @@ export const GQL_PAYMENT_NETWORKS = /* GraphQL */ `
     }
   }
 `;
+
+export const GQL_VENDOR_CROSS_CHAIN = /* GraphQL */ `
+  query VendorCrossChain($vendorIdentifier: String!) {
+    getVendor(vendorIdentifier: $vendorIdentifier) {
+      crossChainNetworks
+    }
+  }
+`;
+
+const PAYMENT_ROUTE_FIELDS = `
+  routeId
+  transactionReference
+  transactionStatus
+  status
+  originAsset
+  originChain
+  depositAddress
+  depositMemo
+  amountIn
+  amountInFormatted
+  amountOut
+  network
+  token
+  recipient
+  refundAddress
+  deadline
+  fundableUntil
+  timeEstimateSeconds
+  originTransactions { hash explorerUrl }
+  destinationTransaction { hash explorerUrl }
+  refundedAmount
+  refundReason
+  paidLate
+`;
+
+export const GQL_CROSS_CHAIN_OPTIONS = /* GraphQL */ `
+  query CrossChainOptions($quoteId: Int!) {
+    crossChainOptions(quoteId: $quoteId) {
+      originAsset
+      name
+      chain
+      chainName
+      decimals
+      available
+      amountIn
+      amountInFormatted
+      amountInUsd
+      timeEstimateSeconds
+      minimumUsd
+      needsMemo
+      reason
+      code
+    }
+  }
+`;
+
+export const GQL_CREATE_CROSS_CHAIN_PAYMENT = /* GraphQL */ `
+  mutation CreateCrossChainPayment($input: CreateCrossChainPaymentInput!) {
+    createCrossChainPayment(input: $input) {
+      success
+      message
+      code
+      resumed
+      route { ${PAYMENT_ROUTE_FIELDS} }
+    }
+  }
+`;
+
+export const GQL_PAYMENT_ROUTE = /* GraphQL */ `
+  query PaymentRoute($transactionReference: String!) {
+    paymentRoute(transactionReference: $transactionReference) { ${PAYMENT_ROUTE_FIELDS} }
+  }
+`;
+
+export const GQL_SUBMIT_CROSS_CHAIN_DEPOSIT = /* GraphQL */ `
+  mutation SubmitCrossChainDeposit($transactionReference: String!, $txHash: String!) {
+    submitCrossChainDeposit(transactionReference: $transactionReference, txHash: $txHash)
+  }
+`;

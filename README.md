@@ -384,6 +384,37 @@ What happens on NEAR:
 
 The customer must be storage-registered on the token they pay with, which is true for any account that already holds it.
 
+### Pay with another asset (NEAR Intents)
+
+Customers can pay a merchant who accepts USDC on Base with **XLM** or **BTC** instead. [NEAR Intents](https://near-intents.org) converts the payment and delivers USDC straight to the merchant's wallet. KwesPay checks the delivery on Base before it marks the order paid. The customer needs no wallet connection: they send one transfer from any wallet or exchange.
+
+```typescript
+const config = await client.getMerchantConfig("YOUR_VENDOR_ID");
+if (config.crossChainNetworks.includes("base")) {
+  const { quote, options } = await client.getCrossChainOptions({
+    amount: 25, currency: "USD", token: "USDC", network: "base",
+  });
+
+  const result = await client.checkoutFromAnotherAsset({
+    quote,
+    originAsset: "XLM",
+    refundAddress: "G…",
+    orderId: "A-1042",
+    onDeposit: (route) => showDeposit(route.depositAddress, route.depositMemo, route.amountInFormatted),
+    onStatus: (title, detail) => setProgress(title, detail),
+  });
+  console.log(result.paid, result.txHash);
+}
+```
+
+- `options` lists each asset with its live price (`amountInFormatted`), estimated time and minimum. Options with `available: false` include a `reason`.
+- `onDeposit` gives you what to show the customer: the amount, the deposit address and, for XLM, a **memo that must be included**.
+- `refundAddress` is the customer's own address on the chain they pay from. If the conversion can't complete, the deposit is refunded there.
+- `result` has the same shape as `checkout()`. Confirm the order on your server with `verifyPayment()`; webhooks work unchanged.
+- The lower-level steps are `payFromAnotherAsset()`, `getPaymentRoute()`, `pollPaymentRoute()` and `submitCrossChainDeposit()`.
+
+Merchants turn this on per network in the dashboard. Available routes: XLM → USDC on Base (from $1) and BTC → USDC on Base (from $20).
+
 ---
 
 ## API Reference
@@ -645,6 +676,9 @@ try {
 | `CONTRACT_ERROR`       | On-chain call reverted or receipt timed out       |
 | `WRONG_NETWORK`        | Wallet is on the wrong chain and could not switch |
 | `NETWORK_ERROR`        | HTTP or connectivity failure reaching the API     |
+| `CROSS_CHAIN_UNAVAILABLE` | Paying with that asset isn't available for this payment |
+| `AMOUNT_BELOW_MINIMUM` | The payment is below the asset's minimum          |
+| `INVALID_REFUND_ADDRESS` | The refund address isn't valid for that chain  |
 | `UNKNOWN`              | Unclassified server-side error                    |
 
 ---
