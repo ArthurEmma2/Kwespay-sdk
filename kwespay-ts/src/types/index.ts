@@ -552,10 +552,17 @@ export interface CrossChainOptionsResult {
   options: CrossChainOption[];
 }
 
+export interface SendCrossChainDepositParams {
+  route: PaymentRoute;
+  wallet: StellarWalletAdapter;
+  onStatus?: (title: string, detail: string) => void;
+}
+
 export interface CrossChainCheckoutParams extends Partial<CrossChainPriceParams> {
   quote?: QuoteResult;
   originAsset: CrossChainOriginAsset;
-  refundAddress: string;
+  refundAddress?: string;
+  wallet?: StellarWalletAdapter;
   onDeposit?: (route: PaymentRoute) => void;
   onRoute?: (route: PaymentRoute) => void;
   onStatus?: (title: string, detail: string) => void;

@@ -19,7 +19,7 @@ export interface CreateStellarPaymentParams {
 }
 
 
-async function loadStellarSdk() {
+export async function loadStellarSdk() {
   try {
     return await import("@stellar/stellar-sdk");
   } catch (err) {
@@ -294,7 +294,7 @@ function hexToBuffer(
   return bytes;
 }
 
-function extractStellarError(err: unknown): string {
+export function extractStellarError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   try {
@@ -304,7 +304,7 @@ function extractStellarError(err: unknown): string {
   }
 }
 
-function isStellarUserRejection(err: unknown): boolean {
+export function isStellarUserRejection(err: unknown): boolean {
   const msg = extractStellarError(err).toLowerCase();
   return (
     msg.includes("rejected") ||

@@ -61,4 +61,5 @@ export type {
   CrossChainCheckoutParams,
   CrossChainCheckoutResult,
   PollPaymentRouteOptions,
+  SendCrossChainDepositParams,
 } from "./types/index.js";

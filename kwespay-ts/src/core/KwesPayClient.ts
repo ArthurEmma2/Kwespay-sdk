@@ -38,6 +38,7 @@ import {
   PaymentRoute,
   PayFromAnotherAssetParams,
   PollPaymentRouteOptions,
+  SendCrossChainDepositParams,
   KwesPayErrorCode,
 } from "../types/index.js";
 import { gqlRequest } from "../utils/gqlClient.js";
@@ -64,6 +65,7 @@ import { buildMerchantConfig } from "../utils/merchantConfig.js";
 import { SuiPaymentService } from "../services/sui/Suipaymentservice.js";
 import { StellarPaymentService } from "../services/stellar/StellarPaymentService.js";
 import { NearPaymentService, checkNearBalance, nearAccountId } from "../services/near/NearPaymentService.js";
+import { sendStellarDeposit, stellarWalletAddress } from "../services/stellar/StellarDepositService.js";
 
 
 const PAYMENT_TARGET_FIELD = /Cannot query field '(contractAddress|registryObjectId)'/;
@@ -875,6 +877,12 @@ export class KwesPayClient {
     }
   }
 
+  async sendCrossChainDeposit(params: SendCrossChainDepositParams): Promise<{ txHash: string }> {
+    const txHash = await sendStellarDeposit(params.route, params.wallet, params.onStatus);
+    await this.submitCrossChainDeposit(params.route.transactionReference, txHash);
+    return { txHash };
+  }
+
   async checkoutFromAnotherAsset(params: CrossChainCheckoutParams): Promise<CrossChainCheckoutResult> {
     const { onDeposit, onRoute, onStatus } = params;
     let quote = params.quote;
@@ -896,15 +904,21 @@ export class KwesPayClient {
       });
     }
 
+    const refundAddress = params.refundAddress ?? (params.wallet ? await stellarWalletAddress(params.wallet) : "");
     onStatus?.("Preparing deposit", `Getting a ${params.originAsset} deposit address`);
     const started = await this.payFromAnotherAsset({
       quoteId: quote.quoteId,
       originAsset: params.originAsset,
-      refundAddress: params.refundAddress,
+      refundAddress,
     });
     onDeposit?.(started);
     let reported = started.status;
-    onStatus?.(...routeProgress(started));
+    if (params.wallet) {
+      await this.sendCrossChainDeposit({ route: started, wallet: params.wallet, onStatus });
+      onStatus?.("Payment sent", `Waiting for your ${started.originAsset} to arrive`);
+    } else {
+      onStatus?.(...routeProgress(started));
+    }
 
     const route = await this.pollPaymentRoute(started.transactionReference, {
       intervalMs: params.intervalMs,
