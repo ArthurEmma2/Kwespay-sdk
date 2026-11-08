@@ -85,6 +85,10 @@ function isSuiNativeCoin(coinType: string): boolean {
   return coinType.toLowerCase().endsWith("::sui::sui");
 }
 
+const COIN_OBJECTS_QUERY = `query($owner: SuiAddress!, $type: String!) {
+  address(address: $owner) { objects(first: 1, filter: { type: $type }) { nodes { address } } }
+}`;
+
 async function fetchCoinObjectId(
   rpcUrl: string,
   owner: string,
@@ -96,10 +100,8 @@ async function fetchCoinObjectId(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "suix_getCoins",
-        params: [owner, coinType, null, 1],
+        query: COIN_OBJECTS_QUERY,
+        variables: { owner, type: `0x2::coin::Coin<${coinType}>` },
       }),
     });
   } catch (err) {
@@ -113,23 +115,23 @@ async function fetchCoinObjectId(
 
   if (!response.ok) {
     throw new KwesPayError(
-      `Sui RPC returned HTTP ${response.status} while fetching coins.`,
+      `Sui GraphQL returned HTTP ${response.status} while fetching coins.`,
       "CONTRACT_ERROR"
     );
   }
 
   const json = await response.json();
 
-  if (json.error) {
+  if (json.errors?.length) {
     throw new KwesPayError(
-      `Sui RPC error fetching coins: ${
-        json.error.message ?? JSON.stringify(json.error)
+      `Sui GraphQL error fetching coins: ${
+        json.errors[0].message ?? JSON.stringify(json.errors[0])
       }`,
       "CONTRACT_ERROR"
     );
   }
 
-  const coins: Array<{ coinObjectId: string }> = json.result?.data ?? [];
+  const coins: Array<{ address: string }> = json.data?.address?.objects?.nodes ?? [];
   if (!coins.length) {
     throw new KwesPayError(
       `No ${coinType} coins found in payer wallet (${owner}). ` +
@@ -138,7 +140,7 @@ async function fetchCoinObjectId(
     );
   }
 
-  return coins[0].coinObjectId;
+  return coins[0].address;
 }
 
 export class SuiContractService {
