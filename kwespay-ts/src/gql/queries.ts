@@ -235,6 +235,8 @@ export const GQL_CROSS_CHAIN_OPTIONS = /* GraphQL */ `
       needsMemo
       reason
       code
+      logoUrl
+      chainLogoUrl
     }
   }
 `;

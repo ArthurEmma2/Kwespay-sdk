@@ -488,6 +488,8 @@ export interface CrossChainOption {
   needsMemo: boolean;
   reason: string | null;
   code: string | null;
+  logoUrl: string | null;
+  chainLogoUrl: string | null;
 }
 
 export type PaymentRouteStatus =
