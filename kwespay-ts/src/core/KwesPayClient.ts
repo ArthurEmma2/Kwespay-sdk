@@ -9,35 +9,169 @@ import {
   EVMPayParams,
   SuiPayParams,
   StellarPayParams,
+  NearPayParams,
   PaymentResult,
   MerchantConfig,
   NetworkKey,
   TokenSymbol,
   KwesPayError,
   ValidateKeyResponse,
+  CreateTransactionParams,
+  CheckBalanceParams,
+  PaymentNetwork,
+  ResolvedChain,
+  SuiNetworkConfig,
+  StellarNetworkConfig,
+  NearNetworkConfig,
+  CheckoutParams,
+  CheckoutResult,
+  VerifyPaymentOptions,
+  VerifyPaymentResult,
+  SuiWalletAdapter,
+  StellarWalletAdapter,
+  NearWalletAdapter,
+  CrossChainOption,
+  CrossChainOptionsResult,
+  CrossChainPriceParams,
+  CrossChainCheckoutParams,
+  CrossChainCheckoutResult,
+  PaymentRoute,
+  PayFromAnotherAssetParams,
+  PollPaymentRouteOptions,
+  SendCrossChainDepositParams,
+  KwesPayErrorCode,
 } from "../types/index.js";
 import { gqlRequest } from "../utils/gqlClient.js";
 import {
   GQL_VALIDATE_KEY,
   GQL_GET_VENDOR,
+  GQL_GET_VENDOR_LEGACY,
   GQL_CREATE_QUOTE,
   GQL_CREATE_TRANSACTION,
+  GQL_CREATE_TRANSACTION_LEGACY,
   GQL_TRANSACTION_STATUS,
+  GQL_VERIFY_PAYMENT,
   GQL_SUBMIT_TRANSACTION_HASH,
+  GQL_PAYMENT_NETWORKS,
+  GQL_VENDOR_CROSS_CHAIN,
+  GQL_CROSS_CHAIN_OPTIONS,
+  GQL_CREATE_CROSS_CHAIN_PAYMENT,
+  GQL_PAYMENT_ROUTE,
+  GQL_SUBMIT_CROSS_CHAIN_DEPOSIT,
 } from "../gql/queries.js";
-import {
-  isSuiNetwork,
-  isStellarNetwork,
-  resolveSuiConfig,
-  configureSui,
-  configureStellar,
-  configureEndpoint,
-} from "../internal/config.js";
+import { ENDPOINT, isSuiNetwork, isStellarNetwork, isNearNetwork } from "../internal/config.js";
 import { PaymentService } from "../services/evm/PaymentService.js";
 import { buildMerchantConfig } from "../utils/merchantConfig.js";
 import { SuiPaymentService } from "../services/sui/Suipaymentservice.js";
 import { StellarPaymentService } from "../services/stellar/StellarPaymentService.js";
+import { NearPaymentService, checkNearBalance, nearAccountId } from "../services/near/NearPaymentService.js";
+import { sendStellarDeposit, stellarWalletAddress } from "../services/stellar/StellarDepositService.js";
 
+
+const PAYMENT_TARGET_FIELD = /Cannot query field '(contractAddress|registryObjectId)'/;
+const NEAR_WALLET_FIELD = /Cannot query field 'hasNearWallet'/;
+const legacyTransactionEndpoints = new Set<string>();
+const legacyVendorEndpoints = new Set<string>();
+
+async function getVendorRequest(endpoint: string, vendorIdentifier: string): Promise<RawGetVendor> {
+  if (!legacyVendorEndpoints.has(endpoint)) {
+    try {
+      return await gqlRequest<RawGetVendor>(endpoint, GQL_GET_VENDOR, { vendorIdentifier });
+    } catch (err) {
+      if (!(err instanceof KwesPayError) || !NEAR_WALLET_FIELD.test(err.message)) throw err;
+      legacyVendorEndpoints.add(endpoint);
+    }
+  }
+  return gqlRequest<RawGetVendor>(endpoint, GQL_GET_VENDOR_LEGACY, { vendorIdentifier });
+}
+
+const ROUTE_FINAL = new Set(["settled", "refunded", "expired"]);
+const PAID_STATUSES = new Set(["completed", "overpaid"]);
+
+function crossChainErrorCode(code: string | null | undefined): KwesPayErrorCode {
+  switch (code) {
+    case "QUOTE_EXPIRED":
+    case "QUOTE_USED":
+    case "QUOTE_NOT_FOUND":
+    case "AMOUNT_BELOW_MINIMUM":
+    case "INVALID_REFUND_ADDRESS":
+    case "NETWORK_NOT_ENABLED":
+    case "INVALID_KEY":
+      return code;
+    case "MERCHANT_UNAVAILABLE":
+      return "MERCHANT_NOT_FOUND";
+    case "ROUTE_UNSUPPORTED":
+    case "CROSS_CHAIN_DISABLED":
+    case "RECIPIENT_INVALID":
+    case "ONECLICK_UNAVAILABLE":
+    case "QUOTE_SIGNATURE_INVALID":
+    case "QUOTE_MISMATCH":
+      return "CROSS_CHAIN_UNAVAILABLE";
+    case "RATE_LIMITED":
+    case "UNAVAILABLE":
+      return "NETWORK_ERROR";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+function routeProgress(route: PaymentRoute): [string, string] {
+  const amount = `${route.amountInFormatted} ${route.originAsset}`;
+  switch (route.status) {
+    case "quoted":
+      return ["Waiting for deposit", `Send ${amount}${route.depositMemo ? ` with memo ${route.depositMemo}` : ""}`];
+    case "deposit_seen":
+      return ["Deposit received", `${amount} received. Converting to ${route.token}`];
+    case "processing":
+      return ["Converting", `Converting ${route.originAsset} to ${route.token} on ${route.network}`];
+    case "incomplete":
+      return ["Deposit too small", "The deposit was less than required and will be refunded"];
+    case "delivered":
+      return ["Confirming payment", `Verifying the ${route.token} payment on ${route.network}`];
+    case "settled":
+      return ["Payment complete", `The merchant received ${route.token} on ${route.network}`];
+    case "refunded":
+      return ["Refunded", route.refundReason ?? `The deposit was refunded to ${route.refundAddress}`];
+    case "expired":
+      return ["Expired", "No deposit was received in time"];
+    default:
+      return ["Processing", "The payment is taking longer than usual"];
+  }
+}
+
+async function createTransactionRequest(
+  endpoint: string,
+  input: { quoteId: number | string | null; payerWalletAddress: string },
+  apiKey: string
+): Promise<RawCreateTransaction> {
+  if (!legacyTransactionEndpoints.has(endpoint)) {
+    try {
+      return await gqlRequest<RawCreateTransaction>(endpoint, GQL_CREATE_TRANSACTION, { input }, apiKey);
+    } catch (err) {
+      if (!(err instanceof KwesPayError) || !PAYMENT_TARGET_FIELD.test(err.message)) throw err;
+      legacyTransactionEndpoints.add(endpoint);
+    }
+  }
+  return gqlRequest<RawCreateTransaction>(endpoint, GQL_CREATE_TRANSACTION_LEGACY, { input }, apiKey);
+}
+
+interface RawVerifyPayment {
+  verifyPayment: {
+    paid: boolean;
+    reason: string | null;
+    transactionReference: string;
+    transactionStatus: string;
+    orderReference: string | null;
+    fiatAmount: number | null;
+    fiatCurrency: string | null;
+    cryptoCurrency: string;
+    displayAmount: number;
+    blockchainNetwork: string | null;
+    blockchainHash: string | null;
+    vendorIdentifier: string;
+    initiatedAt: string;
+  };
+}
 
 interface RawValidateKey {
   validateAccessKey: {
@@ -68,6 +202,7 @@ interface RawGetVendor {
     hasEvmWallet: boolean;
     hasSuiWallet: boolean;
     hasStellarWallet: boolean;
+    hasNearWallet?: boolean;
     activeStatus: boolean;
   } | null;
 }
@@ -107,6 +242,10 @@ interface RawTransactionResponse {
   chainId: number | null;
   deadline: number | null;
   expiresAt: string | null;
+  vendorIdentifier?: string | null;
+  vendorWallet?: string | null;
+  contractAddress?: string | null;
+  registryObjectId?: string | null;
   transaction: {
     transactionReference: string;
     transactionStatus: string;
@@ -135,6 +274,11 @@ interface RawTransactionStatus {
 
 export class KwesPayClient {
   private readonly apiKey: string;
+  private readonly endpoint: string;
+  private readonly suiOverrides: Partial<Record<string, SuiNetworkConfig>>;
+  private readonly stellarOverrides: Partial<Record<string, StellarNetworkConfig>>;
+  private readonly nearOverrides: Partial<Record<string, NearNetworkConfig>>;
+  private networksPromise: Promise<PaymentNetwork[]> | null = null;
 
   constructor(config: KwesPayConfig) {
     if (!config.apiKey) {
@@ -145,16 +289,61 @@ export class KwesPayClient {
       );
     }
     this.apiKey = config.apiKey;
+    this.endpoint = config.graphqlEndpoint || ENDPOINT;
+    this.suiOverrides = config.suiNetworks ?? {};
+    this.stellarOverrides = config.stellarNetworks ?? {};
+    this.nearOverrides = config.nearNetworks ?? {};
+  }
 
-    if (config.suiNetworks) {
-      configureSui(config.suiNetworks);
+  async getNetworks(): Promise<PaymentNetwork[]> {
+    if (!this.networksPromise) {
+      this.networksPromise = gqlRequest<{ paymentNetworks: PaymentNetwork[] }>(
+        this.endpoint,
+        GQL_PAYMENT_NETWORKS,
+        {}
+      )
+        .then((d) => d.paymentNetworks)
+        .catch((err) => {
+          this.networksPromise = null;
+          throw err;
+        });
     }
-    if (config.stellarNetworks) {
-      configureStellar(config.stellarNetworks);
+    return this.networksPromise;
+  }
+
+  async getNetwork(network: string): Promise<PaymentNetwork> {
+    const found = (await this.getNetworks()).find((n) => n.key === network);
+    if (!found) {
+      throw new KwesPayError(
+        `Network "${network}" is not available on ${this.endpoint}.`,
+        "NETWORK_NOT_ENABLED"
+      );
     }
-    if (config.graphqlEndpoint) {
-      configureEndpoint(config.graphqlEndpoint);
-    }
+    return found;
+  }
+
+  private async resolveChain(payload: TransactionPayload): Promise<ResolvedChain> {
+    const sui = this.suiOverrides[payload.network];
+    const stellar = this.stellarOverrides[payload.network];
+    const near = this.nearOverrides[payload.network];
+    const needsCatalog =
+      !payload.contractAddress ||
+      isSuiNetwork(payload.network) ||
+      isStellarNetwork(payload.network) ||
+      (isNearNetwork(payload.network) && !near?.rpcUrl);
+    const net = needsCatalog ? await this.getNetwork(payload.network) : null;
+    return {
+      contractAddress:
+        near?.contractId ??
+        stellar?.contractId ??
+        sui?.packageId ??
+        payload.contractAddress ??
+        net?.contractAddress ??
+        "",
+      registryObjectId: sui?.registryObjectId ?? payload.registryObjectId ?? net?.registryObjectId ?? undefined,
+      rpcUrl: near?.rpcUrl ?? stellar?.rpcUrl ?? net?.publicRpcUrl ?? undefined,
+      networkPassphrase: net?.networkPassphrase ?? undefined,
+    };
   }
 
 
@@ -174,7 +363,7 @@ export class KwesPayClient {
    *   `scope.isAuthorizedForVendor` for that vendor specifically.
    */
   async validateKey(vendorIdentifier?: string): Promise<ValidateKeyResponse> {
-    const data = await gqlRequest<RawValidateKey>(GQL_VALIDATE_KEY, {
+    const data = await gqlRequest<RawValidateKey>(this.endpoint, GQL_VALIDATE_KEY, {
       accessKey: this.apiKey,
     });
     const r = data.validateAccessKey;
@@ -237,9 +426,7 @@ export class KwesPayClient {
       );
     }
 
-    const data = await gqlRequest<RawGetVendor>(GQL_GET_VENDOR, {
-      vendorIdentifier,
-    });
+    const data = await getVendorRequest(this.endpoint, vendorIdentifier);
 
     const vendor = data.getVendor;
 
@@ -259,7 +446,18 @@ export class KwesPayClient {
       );
     }
 
-    return buildMerchantConfig({
+    const [networks, crossChainNetworks] = await Promise.all([
+      this.getNetworks(),
+      gqlRequest<{ getVendor: { crossChainNetworks: string[] } | null }>(
+        this.endpoint,
+        GQL_VENDOR_CROSS_CHAIN,
+        { vendorIdentifier }
+      )
+        .then((d) => d.getVendor?.crossChainNetworks ?? [])
+        .catch(() => [] as string[]),
+    ]);
+
+    return buildMerchantConfig(networks, {
       vendorIdentifier: vendor.vendorIdentifier,
       businessName: vendor.businessName,
       enabledNetworks: vendor.enabledNetworks,
@@ -267,19 +465,23 @@ export class KwesPayClient {
       hasEvmWallet: vendor.hasEvmWallet,
       hasSuiWallet: vendor.hasSuiWallet,
       hasStellarWallet: vendor.hasStellarWallet,
+      hasNearWallet: vendor.hasNearWallet ?? false,
+      crossChainNetworks,
     });
   }
 
   async getQuote(params: QuoteParams): Promise<QuoteResult> {
     const data = await gqlRequest<RawCreateQuote>(
+      this.endpoint,
       GQL_CREATE_QUOTE,
       {
         input: {
-          vendorIdentifier: params.vendorIdentifier,
+          ...(params.vendorIdentifier ? { vendorIdentifier: params.vendorIdentifier } : {}),
           fiatAmount: params.fiatAmount,
           fiatCurrency: params.fiatCurrency ?? "USD",
           cryptoCurrency: params.cryptoCurrency,
           network: params.network,
+          ...(params.orderId != null ? { orderReference: String(params.orderId) } : {}),
         },
       },
       this.apiKey
@@ -296,50 +498,36 @@ export class KwesPayClient {
         _quoteErrCode(q.message ?? "")
       );
     }
+    assertQuoteFields(
+      q,
+      isSuiNetwork(params.network) || isNearNetwork(params.network),
+      isStellarNetwork(params.network),
+      params.vendorIdentifier,
+      params.network
+    );
     return normaliseQuote(q);
   }
 
   // ── Quote + signed transaction payload (wallet-ready) ──────────────────────
 
   async quote(params: QuoteParams): Promise<TransactionPayload> {
-    const sui = isSuiNetwork(params.network);
-    const stellar = isStellarNetwork(params.network);
+    const quote = await this.getQuote(params);
+    return this.createTransaction({
+      quote,
+      vendorIdentifier: params.vendorIdentifier,
+      payerWalletAddress: params.payerWalletAddress ?? "",
+    });
+  }
 
-    const quoteData = await gqlRequest<RawCreateQuote>(
-      GQL_CREATE_QUOTE,
-      {
-        input: {
-          vendorIdentifier: params.vendorIdentifier,
-          fiatAmount: params.fiatAmount,
-          fiatCurrency: params.fiatCurrency ?? "USD",
-          cryptoCurrency: params.cryptoCurrency,
-          network: params.network,
-        },
-      },
-      this.apiKey
-    );
-    const q = quoteData.createQuote;
-    if (!q.success) {
-      throw new KwesPayError(
-        _enrichQuoteError(
-          q.message ?? "Quote creation failed",
-          params.vendorIdentifier,
-          params.network,
-          params.cryptoCurrency
-        ),
-        _quoteErrCode(q.message ?? "")
-      );
-    }
-    assertQuoteFields(q, sui, stellar, params.vendorIdentifier, params.network);
+  async createTransaction(params: CreateTransactionParams): Promise<TransactionPayload> {
+    const { quote, vendorIdentifier, payerWalletAddress } = params;
+    const network = quote.network as NetworkKey;
+    const sui = isSuiNetwork(network) || isNearNetwork(network);
+    const stellar = isStellarNetwork(network);
 
-    const txData = await gqlRequest<RawCreateTransaction>(
-      GQL_CREATE_TRANSACTION,
-      {
-        input: {
-          quoteId: q.quoteId,
-          payerWalletAddress: params.payerWalletAddress ?? "",
-        },
-      },
+    const txData = await createTransactionRequest(
+      this.endpoint,
+      { quoteId: quote.quoteId, payerWalletAddress },
       this.apiKey
     );
     const t = txData.createTransaction;
@@ -347,19 +535,15 @@ export class KwesPayClient {
       throw new KwesPayError(
         _enrichTxError(
           t.message ?? "Transaction creation failed",
-          params.vendorIdentifier,
-          params.network
+          vendorIdentifier,
+          network
         ),
         _txErrCode(t.message ?? "")
       );
     }
-    assertTransactionFields(
-      t,
-      sui,
-      stellar,
-      params.vendorIdentifier,
-      params.network
-    );
+    assertTransactionFields(t, sui, stellar, vendorIdentifier, network);
+    const resolvedVendor =
+      t.vendorIdentifier || vendorIdentifier || t.transaction!.vendorInfo?.vendorIdentifier || "";
 
     return {
       paymentIdBytes32: t.paymentIdBytes32!,
@@ -372,12 +556,35 @@ export class KwesPayClient {
       expiresAt: t.expiresAt!,
       transactionReference: t.transaction!.transactionReference,
       transactionStatus: t.transaction!.transactionStatus as TransactionStatus,
-      network: params.network,
-      vendorIdentifier: params.vendorIdentifier,
+      network,
+      vendorIdentifier: resolvedVendor,
       vendorSuiWallet: t.transaction!.vendorInfo?.suiWalletAddress ?? null,
+      vendorWallet: t.vendorWallet ?? null,
+      payerWalletAddress,
+      contractAddress: t.contractAddress ?? undefined,
+      registryObjectId: t.registryObjectId ?? undefined,
     };
   }
 
+  async checkBalance(params: CheckBalanceParams): Promise<void> {
+    const { quote, provider, payerWalletAddress } = params;
+    if (isNearNetwork(quote.network)) {
+      const rpcUrl =
+        params.rpcUrl ??
+        this.nearOverrides[quote.network]?.rpcUrl ??
+        (await this.getNetwork(quote.network)).publicRpcUrl;
+      if (rpcUrl && payerWalletAddress) {
+        await checkNearBalance(rpcUrl, payerWalletAddress, quote.tokenAddress, quote.totalBaseUnits);
+      }
+      return;
+    }
+    if (isSuiNetwork(quote.network) || isStellarNetwork(quote.network) || !provider) return;
+    await new PaymentService(provider).checkBalance(
+      payerWalletAddress,
+      quote.tokenAddress,
+      quote.totalBaseUnits
+    );
+  }
 
   async pay(params: PayParams): Promise<PaymentResult> {
     const result = await this._dispatchPay(params);
@@ -402,6 +609,19 @@ export class KwesPayClient {
 
   private async _dispatchPay(params: PayParams): Promise<PaymentResult> {
     const { payload } = params;
+    const chain = await this.resolveChain(payload);
+
+    if (isNearNetwork(payload.network)) {
+      const nearParams = params as NearPayParams;
+      if (!nearParams.wallet) {
+        throw new KwesPayError(
+          "NEAR payment requires a `wallet` (NearWalletAdapter, e.g. a @near-wallet-selector wallet). " +
+            `Network "${payload.network}" is a NEAR network — pass \`wallet\` instead of \`provider\`.`,
+          "WALLET_REJECTED"
+        );
+      }
+      return new NearPaymentService(nearParams.wallet).pay(nearParams, chain);
+    }
 
     if (isStellarNetwork(payload.network)) {
       const stellarParams = params as StellarPayParams;
@@ -412,7 +632,7 @@ export class KwesPayClient {
           "WALLET_REJECTED"
         );
       }
-      return new StellarPaymentService(stellarParams.wallet).pay(stellarParams);
+      return new StellarPaymentService(stellarParams.wallet).pay(stellarParams, chain);
     }
 
     if (isSuiNetwork(payload.network)) {
@@ -424,16 +644,9 @@ export class KwesPayClient {
           "WALLET_REJECTED"
         );
       }
-
-      let registryObjectId = suiParams.registryObjectId ?? "";
-      if (!registryObjectId) {
-        const cfg = resolveSuiConfig(payload.network);
-        registryObjectId = cfg.registryObjectId;
-      }
-
-      return new SuiPaymentService(suiParams.wallet).pay({
-        ...suiParams,
-        registryObjectId,
+      return new SuiPaymentService(suiParams.wallet).pay(suiParams, {
+        ...chain,
+        registryObjectId: suiParams.registryObjectId ?? chain.registryObjectId,
       });
     }
 
@@ -446,15 +659,297 @@ export class KwesPayClient {
       );
     }
 
-    return new PaymentService(evmParams.provider).pay(evmParams);
+    return new PaymentService(evmParams.provider).pay(evmParams, chain);
   }
 
+  async checkout(params: CheckoutParams): Promise<CheckoutResult> {
+    const { network, token, amount, orderId, vendorIdentifier, provider, wallet, onStatus } = params;
+    const payerWalletAddress =
+      params.payerWalletAddress ?? (await this._payerAddress(network, provider, wallet));
 
+    onStatus?.("Getting quote", `Pricing ${amount} ${params.currency ?? "USD"} in ${token}`);
+    const quote = await this.getQuote({
+      vendorIdentifier,
+      fiatAmount: amount,
+      fiatCurrency: params.currency,
+      cryptoCurrency: token,
+      network,
+      orderId,
+    });
+    await this.checkBalance({ quote, payerWalletAddress, provider });
+    const payload = await this.createTransaction({ quote, vendorIdentifier, payerWalletAddress });
+
+    const payment = await this.pay({ provider, wallet, payload, onStatus } as PayParams);
+
+    onStatus?.("Confirming payment", "Waiting for KwesPay to confirm the payment on-chain");
+    let status: TransactionStatus;
+    try {
+      status = (await this.pollTransactionStatus(payment.transactionReference)).transactionStatus;
+    } catch {
+      status = (await this.getTransactionStatus(payment.transactionReference)).transactionStatus;
+    }
+
+    return {
+      paid: status === "completed" || status === "overpaid",
+      status,
+      transactionReference: payment.transactionReference,
+      txHash: payment.txHash,
+      orderId: orderId ?? null,
+      network,
+      token: quote.cryptoCurrency,
+      cryptoAmount: quote.displayAmount,
+    };
+  }
+
+  async verifyPayment(
+    transactionReference: string,
+    options: VerifyPaymentOptions
+  ): Promise<VerifyPaymentResult> {
+    if (!transactionReference) {
+      throw new KwesPayError("verifyPayment() needs a transaction reference.", "UNKNOWN");
+    }
+    if (!options || !(Number(options.amount) > 0) || !options.currency) {
+      throw new KwesPayError(
+        "verifyPayment() needs the order's amount and currency so a cheaper payment cannot be accepted for this order.",
+        "UNKNOWN"
+      );
+    }
+    const data = await gqlRequest<RawVerifyPayment>(
+      this.endpoint,
+      GQL_VERIFY_PAYMENT,
+      {
+        transactionReference,
+        expectedAmount: Number(options.amount),
+        expectedCurrency: String(options.currency),
+        orderReference: options.orderId != null ? String(options.orderId) : null,
+      },
+      this.apiKey
+    );
+    const r = data.verifyPayment;
+    return {
+      paid: r.paid,
+      reason: r.reason,
+      transactionReference: r.transactionReference,
+      status: r.transactionStatus as TransactionStatus,
+      orderId: r.orderReference,
+      fiatAmount: r.fiatAmount,
+      fiatCurrency: r.fiatCurrency,
+      token: r.cryptoCurrency,
+      cryptoAmount: r.displayAmount,
+      network: r.blockchainNetwork,
+      txHash: r.blockchainHash,
+      vendorIdentifier: r.vendorIdentifier,
+      initiatedAt: r.initiatedAt,
+    };
+  }
+
+  private async _payerAddress(
+    network: NetworkKey,
+    provider?: CheckoutParams["provider"],
+    wallet?: CheckoutParams["wallet"]
+  ): Promise<string> {
+    if (isNearNetwork(network)) {
+      if (wallet) return nearAccountId(wallet as NearWalletAdapter);
+    } else if (isStellarNetwork(network)) {
+      const res = await (wallet as StellarWalletAdapter | undefined)?.getAddress();
+      const address = typeof res === "string" ? res : res?.address;
+      if (address) return address;
+    } else if (isSuiNetwork(network)) {
+      const sui = wallet as SuiWalletAdapter | undefined;
+      const address = sui?.accounts?.[0]?.address ?? (await sui?.connect())?.accounts?.[0]?.address;
+      if (address) return address;
+    } else if (provider) {
+      const accounts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
+      if (accounts?.[0]) return accounts[0];
+    }
+    throw new KwesPayError(
+      isStellarNetwork(network) || isSuiNetwork(network) || isNearNetwork(network)
+        ? `checkout() on "${network}" needs a connected \`wallet\`.`
+        : `checkout() on "${network}" needs an EIP-1193 \`provider\`, e.g. window.ethereum.`,
+      "WALLET_REJECTED"
+    );
+  }
+
+  async getCrossChainOptions(
+    params: CrossChainPriceParams | { quote: QuoteResult }
+  ): Promise<CrossChainOptionsResult> {
+    const quote =
+      "quote" in params
+        ? params.quote
+        : await this.getQuote({
+            vendorIdentifier: params.vendorIdentifier,
+            fiatAmount: params.amount,
+            fiatCurrency: params.currency,
+            cryptoCurrency: params.token,
+            network: params.network,
+            orderId: params.orderId,
+          });
+    const data = await gqlRequest<{ crossChainOptions: CrossChainOption[] }>(
+      this.endpoint,
+      GQL_CROSS_CHAIN_OPTIONS,
+      { quoteId: Number(quote.quoteId) },
+      this.apiKey
+    );
+    return { quote, options: data.crossChainOptions };
+  }
+
+  async payFromAnotherAsset(params: PayFromAnotherAssetParams): Promise<PaymentRoute> {
+    const refundAddress = (params.refundAddress ?? "").trim();
+    if (!refundAddress) {
+      throw new KwesPayError(
+        "payFromAnotherAsset() needs the customer's refundAddress on the chain they pay from.",
+        "INVALID_REFUND_ADDRESS"
+      );
+    }
+    const data = await gqlRequest<{
+      createCrossChainPayment: {
+        success: boolean;
+        message: string;
+        code: string | null;
+        resumed: boolean;
+        route: PaymentRoute | null;
+      };
+    }>(
+      this.endpoint,
+      GQL_CREATE_CROSS_CHAIN_PAYMENT,
+      { input: { quoteId: Number(params.quoteId), originAsset: params.originAsset, refundAddress } },
+      this.apiKey
+    );
+    const r = data.createCrossChainPayment;
+    if (!r.success || !r.route) {
+      throw new KwesPayError(r.message || "The payment could not be started.", crossChainErrorCode(r.code));
+    }
+    return r.route;
+  }
+
+  async getPaymentRoute(transactionReference: string): Promise<PaymentRoute> {
+    const data = await gqlRequest<{ paymentRoute: PaymentRoute }>(
+      this.endpoint,
+      GQL_PAYMENT_ROUTE,
+      { transactionReference }
+    );
+    return data.paymentRoute;
+  }
+
+  async pollPaymentRoute(
+    transactionReference: string,
+    options: PollPaymentRouteOptions = {}
+  ): Promise<PaymentRoute> {
+    const { onRoute, intervalMs = 5000 } = options;
+    const deadline = Date.now() + (options.timeoutMs ?? 2 * 60 * 60 * 1000);
+    let last: PaymentRoute | null = null;
+    let lastKey = "";
+    for (;;) {
+      try {
+        const route = await this.getPaymentRoute(transactionReference);
+        last = route;
+        const key = `${route.status}:${route.transactionStatus}:${route.destinationTransaction?.hash ?? ""}`;
+        if (key !== lastKey) {
+          lastKey = key;
+          onRoute?.(route);
+        }
+        if (ROUTE_FINAL.has(route.status) || PAID_STATUSES.has(route.transactionStatus)) return route;
+      } catch (err) {
+        if (Date.now() >= deadline) throw err;
+      }
+      if (Date.now() >= deadline) {
+        if (last) return last;
+        throw new KwesPayError(
+          `Timed out waiting for payment route "${transactionReference}". Call getPaymentRoute() to check it.`,
+          "UNKNOWN"
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  async submitCrossChainDeposit(transactionReference: string, txHash: string): Promise<boolean> {
+    try {
+      const data = await gqlRequest<{ submitCrossChainDeposit: boolean }>(
+        this.endpoint,
+        GQL_SUBMIT_CROSS_CHAIN_DEPOSIT,
+        { transactionReference, txHash },
+        this.apiKey
+      );
+      return data.submitCrossChainDeposit;
+    } catch {
+      return false;
+    }
+  }
+
+  async sendCrossChainDeposit(params: SendCrossChainDepositParams): Promise<{ txHash: string }> {
+    const txHash = await sendStellarDeposit(params.route, params.wallet, params.onStatus);
+    await this.submitCrossChainDeposit(params.route.transactionReference, txHash);
+    return { txHash };
+  }
+
+  async checkoutFromAnotherAsset(params: CrossChainCheckoutParams): Promise<CrossChainCheckoutResult> {
+    const { onDeposit, onRoute, onStatus } = params;
+    let quote = params.quote;
+    if (!quote) {
+      if (params.amount == null || !params.token || !params.network) {
+        throw new KwesPayError(
+          "checkoutFromAnotherAsset() needs a quote, or amount, token and network.",
+          "UNKNOWN"
+        );
+      }
+      onStatus?.("Getting quote", `Pricing ${params.amount} ${params.currency ?? "USD"} in ${params.token}`);
+      quote = await this.getQuote({
+        vendorIdentifier: params.vendorIdentifier,
+        fiatAmount: params.amount,
+        fiatCurrency: params.currency,
+        cryptoCurrency: params.token,
+        network: params.network,
+        orderId: params.orderId,
+      });
+    }
+
+    const refundAddress = params.refundAddress ?? (params.wallet ? await stellarWalletAddress(params.wallet) : "");
+    onStatus?.("Preparing deposit", `Getting a ${params.originAsset} deposit address`);
+    const started = await this.payFromAnotherAsset({
+      quoteId: quote.quoteId,
+      originAsset: params.originAsset,
+      refundAddress,
+    });
+    onDeposit?.(started);
+    let reported = started.status;
+    if (params.wallet) {
+      await this.sendCrossChainDeposit({ route: started, wallet: params.wallet, onStatus });
+      onStatus?.("Payment sent", `Waiting for your ${started.originAsset} to arrive`);
+    } else {
+      onStatus?.(...routeProgress(started));
+    }
+
+    const route = await this.pollPaymentRoute(started.transactionReference, {
+      intervalMs: params.intervalMs,
+      timeoutMs: params.timeoutMs,
+      onRoute: (r) => {
+        onRoute?.(r);
+        if (r.status !== reported) {
+          reported = r.status;
+          onStatus?.(...routeProgress(r));
+        }
+      },
+    });
+
+    return {
+      paid: PAID_STATUSES.has(route.transactionStatus),
+      status: route.transactionStatus,
+      transactionReference: route.transactionReference,
+      txHash: route.destinationTransaction?.hash ?? "",
+      orderId: params.orderId ?? null,
+      network: route.network,
+      token: route.token,
+      cryptoAmount: quote.displayAmount,
+      route,
+    };
+  }
 
   async getTransactionStatus(
     transactionReference: string
   ): Promise<TransactionStatusResult> {
     const data = await gqlRequest<RawTransactionStatus>(
+      this.endpoint,
       GQL_TRANSACTION_STATUS,
       { transactionReference }
     );
@@ -481,6 +976,7 @@ export class KwesPayClient {
     txHash: string
   ): Promise<void> {
     await gqlRequest(
+      this.endpoint,
       GQL_SUBMIT_TRANSACTION_HASH,
       { input: { transactionReference, txHash } },
       this.apiKey
@@ -558,7 +1054,7 @@ function assertQuoteFields(
   q: RawQuoteResponse,
   isSui: boolean,
   isStellar: boolean,
-  vendorIdentifier: string,
+  vendorIdentifier: string | undefined,
   network: string
 ): void {
   const missing: string[] = [];
@@ -573,7 +1069,7 @@ function assertQuoteFields(
   if (!q.expiresAt) missing.push("expiresAt");
   if (missing.length) {
     throw new KwesPayError(
-      `Incomplete quote response for vendor="${vendorIdentifier}" network="${network}" — ` +
+      `Incomplete quote response for vendor="${vendorIdentifier ?? "from API key"}" network="${network}" — ` +
         `missing fields: [${missing.join(", ")}]. ` +
         "This indicates a backend version mismatch. " +
         "Ensure your backend is up to date and exposes all QuoteResponse fields.",
@@ -586,7 +1082,7 @@ function assertTransactionFields(
   t: RawTransactionResponse,
   isSui: boolean,
   isStellar: boolean,
-  vendorIdentifier: string,
+  vendorIdentifier: string | undefined,
   network: string
 ): void {
   const missing: string[] = [];
@@ -601,7 +1097,7 @@ function assertTransactionFields(
   if (!t.transaction) missing.push("transaction");
   if (missing.length) {
     throw new KwesPayError(
-      `Incomplete transaction response for vendor="${vendorIdentifier}" network="${network}" — ` +
+      `Incomplete transaction response for vendor="${vendorIdentifier ?? "from API key"}" network="${network}" — ` +
         `missing fields: [${missing.join(", ")}]. ` +
         "This indicates a backend version mismatch. " +
         "Ensure your backend is up to date and exposes all PaymentTransactionResponse fields.",
@@ -612,7 +1108,7 @@ function assertTransactionFields(
 
 function _enrichQuoteError(
   msg: string,
-  vendorIdentifier: string,
+  vendorIdentifier: string | undefined,
   network: string,
   token: string
 ): string {
@@ -620,7 +1116,7 @@ function _enrichQuoteError(
 
   if (base.toLowerCase().includes("not enabled")) {
     return (
-      `[vendor="${vendorIdentifier}" network="${network}" token="${token}"] ` +
+      `[vendor="${vendorIdentifier ?? "from API key"}" network="${network}" token="${token}"] ` +
       `${base} ` +
       "Call getMerchantConfig() first and only call quote() with networks and tokens " +
       "present in the returned networkTokenMap."
@@ -632,7 +1128,7 @@ function _enrichQuoteError(
     base.toLowerCase().includes("not configured")
   ) {
     return (
-      `[vendor="${vendorIdentifier}" network="${network}" token="${token}"] ` +
+      `[vendor="${vendorIdentifier ?? "from API key"}" network="${network}" token="${token}"] ` +
       `${base} ` +
       "Verify the token is in the vendor's acceptedCurrencies and is supported " +
       "by KwesPay on this network."
@@ -641,25 +1137,25 @@ function _enrichQuoteError(
 
   if (base.toLowerCase().includes("wallet")) {
     return (
-      `[vendor="${vendorIdentifier}" network="${network}"] ` +
+      `[vendor="${vendorIdentifier ?? "from API key"}" network="${network}"] ` +
       `${base} ` +
       "The vendor must configure a wallet for this network family in their dashboard."
     );
   }
 
-  return `[vendor="${vendorIdentifier}" network="${network}" token="${token}"] ${base}`;
+  return `[vendor="${vendorIdentifier ?? "from API key"}" network="${network}" token="${token}"] ${base}`;
 }
 
 function _enrichTxError(
   msg: string,
-  vendorIdentifier: string,
+  vendorIdentifier: string | undefined,
   network: string
 ): string {
   const base = msg.trim();
 
   if (base.toLowerCase().includes("expired")) {
     return (
-      `[vendor="${vendorIdentifier}" network="${network}"] ` +
+      `[vendor="${vendorIdentifier ?? "from API key"}" network="${network}"] ` +
       `${base} ` +
       "Quotes expire after 10 minutes. Call quote() again to get a fresh quote."
     );
@@ -667,7 +1163,7 @@ function _enrichTxError(
 
   if (base.toLowerCase().includes("already been used")) {
     return (
-      `[vendor="${vendorIdentifier}" network="${network}"] ` +
+      `[vendor="${vendorIdentifier ?? "from API key"}" network="${network}"] ` +
       `${base} ` +
       "A quote can only be used once. Call quote() to obtain a new quote."
     );
@@ -675,21 +1171,21 @@ function _enrichTxError(
 
   if (base.toLowerCase().includes("not found")) {
     return (
-      `[vendor="${vendorIdentifier}" network="${network}"] ` +
+      `[vendor="${vendorIdentifier ?? "from API key"}" network="${network}"] ` +
       `${base} ` +
       "The quoteId returned by createQuote does not exist on the backend. " +
       "Do not cache or reuse quoteId values across sessions."
     );
   }
 
-  return `[vendor="${vendorIdentifier}" network="${network}"] ${base}`;
+  return `[vendor="${vendorIdentifier ?? "from API key"}" network="${network}"] ${base}`;
 }
 
 function _quoteErrCode(msg: string): KwesPayError["code"] {
   const m = msg.toLowerCase();
+  if (m.includes("access key") || m.includes("api key")) return "INVALID_KEY";
   if (m.includes("expired")) return "QUOTE_EXPIRED";
-  if (m.includes("key")) return "INVALID_KEY";
-  if (m.includes("not enabled") || m.includes("not enabled"))
+  if (m.includes("not enabled") || m.includes("not available"))
     return "NETWORK_NOT_ENABLED";
   if (m.includes("not supported") || m.includes("not configured"))
     return "TOKEN_NOT_SUPPORTED";
@@ -700,9 +1196,9 @@ function _quoteErrCode(msg: string): KwesPayError["code"] {
 
 function _txErrCode(msg: string): KwesPayError["code"] {
   const m = msg.toLowerCase();
+  if (m.includes("access key") || m.includes("api key")) return "INVALID_KEY";
   if (m.includes("expired")) return "QUOTE_EXPIRED";
   if (m.includes("already been used")) return "QUOTE_USED";
   if (m.includes("not found")) return "QUOTE_NOT_FOUND";
-  if (m.includes("key")) return "INVALID_KEY";
   return "UNKNOWN";
 }

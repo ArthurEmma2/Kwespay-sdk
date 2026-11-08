@@ -6,9 +6,9 @@ import {
   PaymentResult,
   KwesPayError,
   EVMPayParams,
+  ResolvedChain,
 } from "../../types/index.js";
 import { ContractService } from "./ContractService.js";
-import { resolveContractAddress } from "../../internal/config.js";
 import { isZeroAddress } from "../../utils/address.js";
 import { extractErrorMessage, isUserRejection } from "../../utils/errors.js";
 
@@ -78,6 +78,14 @@ export class PaymentService {
         "WRONG_NETWORK"
       );
     }
+  }
+
+  async checkBalance(
+    walletAddress: string,
+    tokenAddress: string,
+    totalBaseUnits: string
+  ): Promise<void> {
+    return this.ensureSufficientBalance(walletAddress, tokenAddress, totalBaseUnits);
   }
 
   private async ensureSufficientBalance(
@@ -150,7 +158,7 @@ export class PaymentService {
     }
   }
 
-  async pay(params: EVMPayParams): Promise<PaymentResult> {
+  async pay(params: EVMPayParams, chain: ResolvedChain): Promise<PaymentResult> {
     const { payload, onStatus } = params;
 
     if (!payload.paymentIdBytes32 || !payload.backendSignature) {
@@ -202,7 +210,13 @@ export class PaymentService {
       onStatus
     );
 
-    const contractAddress = resolveContractAddress(payload.network);
+    const contractAddress = chain.contractAddress;
+    if (!contractAddress) {
+      throw new KwesPayError(
+        `No KwesPay contract is published for "${payload.network}".`,
+        "CONTRACT_ERROR"
+      );
+    }
 
     await this.contractService.ensureApproval(
       payload.tokenAddress,

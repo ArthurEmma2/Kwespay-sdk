@@ -3,9 +3,9 @@ import {
   PaymentResult,
   StellarPayParams,
   KwesPayError,
+  ResolvedChain,
 } from "../../types/index.js";
 import { StellarContractService } from "./ContractService.js";
-import { resolveStellarNetworkConfig } from "../../internal/config.js";
 
 export class StellarPaymentService {
   private readonly wallet: StellarPayParams["wallet"];
@@ -14,7 +14,7 @@ export class StellarPaymentService {
     this.wallet = wallet;
   }
 
-  async pay(params: StellarPayParams): Promise<PaymentResult> {
+  async pay(params: StellarPayParams, chain: ResolvedChain): Promise<PaymentResult> {
     const { payload, onStatus } = params;
 
     if (!payload.paymentIdBytes32 || !payload.backendSignature) {
@@ -36,8 +36,14 @@ export class StellarPaymentService {
       );
     }
 
-    const { rpcUrl, networkPassphrase, contractId } =
-      resolveStellarNetworkConfig(payload.network);
+    const contractId = params.contractId ?? chain.contractAddress;
+    const { rpcUrl, networkPassphrase } = chain;
+    if (!contractId || !rpcUrl || !networkPassphrase) {
+      throw new KwesPayError(
+        `Stellar network "${payload.network}" is not published by the KwesPay API.`,
+        "CONTRACT_ERROR"
+      );
+    }
 
     let customerAddress: string;
     try {
@@ -60,7 +66,7 @@ export class StellarPaymentService {
         tokenAddress: payload.tokenAddress,
         amountBaseUnits: payload.amountBaseUnits,
         backendSignature: payload.backendSignature,
-        contractId: params.contractId ?? contractId,
+        contractId,
         deadlineLedger: payload.deadline,
         customerAddress,
         rpcUrl,

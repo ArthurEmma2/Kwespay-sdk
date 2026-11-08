@@ -35,10 +35,13 @@ export const GQL_GET_VENDOR = /* GraphQL */ `
       hasEvmWallet
       hasSuiWallet
       hasStellarWallet
+      hasNearWallet
       activeStatus
     }
   }
 `;
+
+export const GQL_GET_VENDOR_LEGACY = GQL_GET_VENDOR.replace(/\n\s*hasNearWallet/, "");
 
 export const GQL_CREATE_QUOTE = /* GraphQL */ `
   mutation CreateQuote($input: CreateQuoteInput!) {
@@ -72,6 +75,10 @@ export const GQL_CREATE_TRANSACTION = /* GraphQL */ `
       chainId
       deadline
       expiresAt
+      vendorIdentifier
+      vendorWallet
+      contractAddress
+      registryObjectId
       transaction {
         transactionReference
         transactionStatus
@@ -80,6 +87,38 @@ export const GQL_CREATE_TRANSACTION = /* GraphQL */ `
           suiWalletAddress
         }
       }
+    }
+  }
+`;
+
+export const GQL_CREATE_TRANSACTION_LEGACY = GQL_CREATE_TRANSACTION.replace(/\n\s*contractAddress\n\s*registryObjectId/, "");
+
+export const GQL_VERIFY_PAYMENT = /* GraphQL */ `
+  query VerifyPayment(
+    $transactionReference: String!
+    $expectedAmount: Float!
+    $expectedCurrency: String!
+    $orderReference: String
+  ) {
+    verifyPayment(
+      transactionReference: $transactionReference
+      orderReference: $orderReference
+      expectedAmount: $expectedAmount
+      expectedCurrency: $expectedCurrency
+    ) {
+      paid
+      reason
+      transactionReference
+      transactionStatus
+      orderReference
+      fiatAmount
+      fiatCurrency
+      cryptoCurrency
+      displayAmount
+      blockchainNetwork
+      blockchainHash
+      vendorIdentifier
+      initiatedAt
     }
   }
 `;
@@ -113,5 +152,113 @@ export const GQL_SUBMIT_TRANSACTION_HASH = /* GraphQL */ `
       blockchainHash
       blockchainNetwork
     }
+  }
+`;
+
+export const GQL_PAYMENT_NETWORKS = /* GraphQL */ `
+  query PaymentNetworks {
+    paymentNetworks {
+      key
+      name
+      environment
+      ecosystem
+      chainId
+      contractAddress
+      registryObjectId
+      platformFeeBps
+      explorerTxUrl
+      publicRpcUrl
+      nativeSymbol
+      networkPassphrase
+      logoUrl
+      tokens {
+        symbol
+        displaySymbol
+        name
+        logoUrl
+        address
+        decimals
+        isNative
+      }
+    }
+  }
+`;
+
+export const GQL_VENDOR_CROSS_CHAIN = /* GraphQL */ `
+  query VendorCrossChain($vendorIdentifier: String!) {
+    getVendor(vendorIdentifier: $vendorIdentifier) {
+      crossChainNetworks
+    }
+  }
+`;
+
+const PAYMENT_ROUTE_FIELDS = `
+  routeId
+  transactionReference
+  transactionStatus
+  status
+  originAsset
+  originChain
+  depositAddress
+  depositMemo
+  amountIn
+  amountInFormatted
+  amountOut
+  network
+  token
+  recipient
+  refundAddress
+  deadline
+  fundableUntil
+  timeEstimateSeconds
+  originTransactions { hash explorerUrl }
+  destinationTransaction { hash explorerUrl }
+  refundedAmount
+  refundReason
+  paidLate
+`;
+
+export const GQL_CROSS_CHAIN_OPTIONS = /* GraphQL */ `
+  query CrossChainOptions($quoteId: Int!) {
+    crossChainOptions(quoteId: $quoteId) {
+      originAsset
+      name
+      chain
+      chainName
+      decimals
+      available
+      amountIn
+      amountInFormatted
+      amountInUsd
+      timeEstimateSeconds
+      minimumUsd
+      needsMemo
+      reason
+      code
+    }
+  }
+`;
+
+export const GQL_CREATE_CROSS_CHAIN_PAYMENT = /* GraphQL */ `
+  mutation CreateCrossChainPayment($input: CreateCrossChainPaymentInput!) {
+    createCrossChainPayment(input: $input) {
+      success
+      message
+      code
+      resumed
+      route { ${PAYMENT_ROUTE_FIELDS} }
+    }
+  }
+`;
+
+export const GQL_PAYMENT_ROUTE = /* GraphQL */ `
+  query PaymentRoute($transactionReference: String!) {
+    paymentRoute(transactionReference: $transactionReference) { ${PAYMENT_ROUTE_FIELDS} }
+  }
+`;
+
+export const GQL_SUBMIT_CROSS_CHAIN_DEPOSIT = /* GraphQL */ `
+  mutation SubmitCrossChainDeposit($transactionReference: String!, $txHash: String!) {
+    submitCrossChainDeposit(transactionReference: $transactionReference, txHash: $txHash)
   }
 `;
