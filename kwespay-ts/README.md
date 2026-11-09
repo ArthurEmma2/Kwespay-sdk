@@ -2,12 +2,7 @@
 
 Accept crypto priced in fiat on **Stellar**, **NEAR** and EVM networks with one TypeScript call. KwesPay sets the price and signs the terms, the customer's wallet pays, and the contract settles directly to the merchant.
 
-```
-your app --> @kwespay/client --> KwesPay API (prices and signs the terms)
-                   |
-                   v
-           customer wallet --> payment contract --> merchant wallet
-```
+![How a KwesPay payment moves: your app requests a price, KwesPay signs the terms, the customer approves in their wallet, the contract settles, and the merchant is paid](https://raw.githubusercontent.com/ArthurEmma2/Kwespay-sdk/main/assets/payment-flow.png)
 
 | Chain | Network keys | Assets | Wallet |
 | --- | --- | --- | --- |

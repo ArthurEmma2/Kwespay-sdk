@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 640" width="1600" height="640">
+<defs><marker id="a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#a3a2b8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="1600" height="640" rx="28" fill="#0b0b12"/>
+<text x="72" y="92" font-size="36" font-weight="650" fill="#f4f3ff" letter-spacing="-0.6">How a KwesPay payment moves</text>
+<text x="72" y="132" font-size="21" fill="#9a99ae">KwesPay sets the terms, the customer pays, and the contract settles directly to the merchant.</text>
+<rect x="72" y="196" width="232" height="128" rx="16" fill="#15151f" stroke="#2c2c3c" stroke-width="1.5"/>
+<text x="188.0" y="254" text-anchor="middle" font-size="23.5" font-weight="620" fill="#f4f3ff" letter-spacing="-0.2">Your app</text>
+<text x="188.0" y="287" text-anchor="middle" font-size="17" fill="#9a99ae">@kwespay/client</text>
+<rect x="378" y="196" width="232" height="128" rx="16" fill="#15151f" stroke="#2c2c3c" stroke-width="1.5"/>
+<text x="494.0" y="254" text-anchor="middle" font-size="23.5" font-weight="620" fill="#f4f3ff" letter-spacing="-0.2">KwesPay API</text>
+<text x="494.0" y="287" text-anchor="middle" font-size="17" fill="#9a99ae">Pricing and signing</text>
+<rect x="684" y="196" width="232" height="128" rx="16" fill="#15151f" stroke="#2c2c3c" stroke-width="1.5"/>
+<text x="800.0" y="254" text-anchor="middle" font-size="23.5" font-weight="620" fill="#f4f3ff" letter-spacing="-0.2">Customer wallet</text>
+<text x="800.0" y="287" text-anchor="middle" font-size="17" fill="#9a99ae">Holds the funds</text>
+<rect x="990" y="196" width="232" height="128" rx="16" fill="#17172c" stroke="#6366f1" stroke-width="2"/>
+<text x="1106.0" y="254" text-anchor="middle" font-size="23.5" font-weight="620" fill="#f4f3ff" letter-spacing="-0.2">Payment contract</text>
+<text x="1106.0" y="287" text-anchor="middle" font-size="17" fill="#9a99ae">On-chain rules</text>
+<rect x="1296" y="196" width="232" height="128" rx="16" fill="#10201c" stroke="#10b981" stroke-width="2"/>
+<text x="1412.0" y="254" text-anchor="middle" font-size="23.5" font-weight="620" fill="#f4f3ff" letter-spacing="-0.2">Merchant wallet</text>
+<text x="1412.0" y="287" text-anchor="middle" font-size="17" fill="#9a99ae">Final destination</text>
+<line x1="316" y1="260.0" x2="366" y2="260.0" stroke="#a3a2b8" stroke-width="2" stroke-linecap="round" marker-end="url(#a)"/>
+<line x1="622" y1="260.0" x2="672" y2="260.0" stroke="#a3a2b8" stroke-width="2" stroke-linecap="round" marker-end="url(#a)"/>
+<line x1="928" y1="260.0" x2="978" y2="260.0" stroke="#a3a2b8" stroke-width="2" stroke-linecap="round" marker-end="url(#a)"/>
+<line x1="1234" y1="260.0" x2="1284" y2="260.0" stroke="#a3a2b8" stroke-width="2" stroke-linecap="round" marker-end="url(#a)"/>
+<text x="188.0" y="372" text-anchor="middle" font-size="19" font-weight="620" fill="#c7c9ff"><tspan fill="#7f83f5">1</tspan>  Request</text>
+<text x="188.0" y="404" text-anchor="middle" font-size="17.5" fill="#a3a2b8">Send the fiat price</text>
+<text x="188.0" y="429" text-anchor="middle" font-size="17.5" fill="#a3a2b8">and the token.</text>
+<text x="494.0" y="372" text-anchor="middle" font-size="19" font-weight="620" fill="#c7c9ff"><tspan fill="#7f83f5">2</tspan>  Sign</text>
+<text x="494.0" y="404" text-anchor="middle" font-size="17.5" fill="#a3a2b8">KwesPay locks the price</text>
+<text x="494.0" y="429" text-anchor="middle" font-size="17.5" fill="#a3a2b8">and signs the exact terms.</text>
+<text x="800.0" y="372" text-anchor="middle" font-size="19" font-weight="620" fill="#c7c9ff"><tspan fill="#7f83f5">3</tspan>  Approve</text>
+<text x="800.0" y="404" text-anchor="middle" font-size="17.5" fill="#a3a2b8">The customer confirms</text>
+<text x="800.0" y="429" text-anchor="middle" font-size="17.5" fill="#a3a2b8">one transaction.</text>
+<text x="1106.0" y="372" text-anchor="middle" font-size="19" font-weight="620" fill="#c7c9ff"><tspan fill="#7f83f5">4</tspan>  Settle</text>
+<text x="1106.0" y="404" text-anchor="middle" font-size="17.5" fill="#a3a2b8">The contract rejects</text>
+<text x="1106.0" y="429" text-anchor="middle" font-size="17.5" fill="#a3a2b8">anything not signed.</text>
+<text x="1412.0" y="372" text-anchor="middle" font-size="19" font-weight="620" fill="#c7c9ff"><tspan fill="#7f83f5">5</tspan>  Paid</text>
+<text x="1412.0" y="404" text-anchor="middle" font-size="17.5" fill="#a3a2b8">Funds go straight</text>
+<text x="1412.0" y="429" text-anchor="middle" font-size="17.5" fill="#a3a2b8">to the merchant.</text>
+<line x1="1524" y1="484" x2="78" y2="484" stroke="#a3a2b8" stroke-width="2" stroke-linecap="round" stroke-dasharray="1 8" marker-end="url(#a)"/>
+<rect x="408" y="466" width="784" height="36" fill="#0b0b12"/>
+<text x="800" y="490" text-anchor="middle" font-size="18" fill="#a3a2b8"><tspan fill="#7f83f5" font-weight="620">6</tspan><tspan font-weight="620" fill="#c7c9ff">  Confirmed</tspan>   KwesPay reads the on-chain result and reports the final status to your app</text>
+<line x1="72" y1="566" x2="1528" y2="566" stroke="#23232f" stroke-width="1.5"/>
+<text x="72" y="607" font-size="20" font-weight="620" fill="#f4f3ff">KwesPay never holds the funds.</text>
+<text x="1528" y="607" text-anchor="end" font-size="20" fill="#9a99ae"><tspan fill="#f4f3ff" font-weight="620">Stellar</tspan><tspan dx="26" fill="#f4f3ff" font-weight="620">NEAR</tspan><tspan dx="26">EVM</tspan><tspan dx="26">Sui</tspan></text>
+</svg>
