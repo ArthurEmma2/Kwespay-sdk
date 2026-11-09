@@ -1,6 +1,6 @@
 {
   "name": "@kwespay/client",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "description": "TypeScript SDK for KwesPay — accept crypto payments in three steps.",
   "author": "KwesPay",
   "license": "MIT",

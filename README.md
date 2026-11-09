@@ -1,53 +1,208 @@
 # @kwespay/client
 
-TypeScript SDK for [KwesPay](https://www.kwespay.xyz/) — accept crypto payments in your app with minimal setup.
+Accept crypto priced in fiat on **Stellar**, **NEAR** and EVM networks with one TypeScript call. KwesPay sets the price and signs the terms, the customer's wallet pays, and the contract settles directly to the merchant.
 
-All pricing, signing, and contract addresses are managed server-side. You initialise the client, request a quote, and execute the payment. Nothing else is required.
+```
+your app --> @kwespay/client --> KwesPay API (prices and signs the terms)
+                   |
+                   v
+           customer wallet --> payment contract --> merchant wallet
+```
 
-- **Wallet payments** on EVM networks, Sui, Stellar and NEAR with one `checkout()` call.
-- **Pay from any chain, powered by [NEAR Intents](https://near-intents.org).** Customers holding XLM or BTC can pay a merchant who accepts USDC on Base with one transfer from any wallet or exchange. See [Pay with another asset](#pay-with-another-asset-near-intents).
-- **Server-side verification** with `verifyPayment()` and signed webhooks.
+| Chain | Network keys | Assets | Wallet |
+| --- | --- | --- | --- |
+| **Stellar** | `stellarTestnet`, `stellarMainnet` | XLM, USDC | `StellarWalletAdapter` |
+| **NEAR** | `nearTestnet` | NEAR, USDC, USDC.e, USDT | `NearWalletAdapter` |
+| **NEAR Intents** | Delivered to the merchant's network | Any token NEAR Intents supports | Any wallet or exchange |
+| EVM | `ethereum`, `base`, `polygon`, `arbitrum`, `lisk`, and testnets | Native coin, USDC, USDT | EIP-1193 provider |
+| Sui | `suiTestnet` | SUI, USDC | `SuiWalletAdapter` |
 
----
-
-## Prerequisites
-
-Before installing the SDK, you need a KwesPay vendor account and an API key.
-
-1. Go to [app.kwespay.xyz](https://app.kwespay.xyz) and create an account
-2. Create a vendor profile — this gives you your **Vendor ID**
-3. Navigate to **API Keys** and generate a key — this is your **API Key**
-
-Keep both values handy; you will need them to initialise the client.
-
----
-
-## Installation
+## Install
 
 ```bash
 npm install @kwespay/client
 ```
 
+Create a merchant at [app.kwespay.xyz](https://app.kwespay.xyz), or [app.testnet.kwespay.xyz](https://app.testnet.kwespay.xyz) for testnet, and generate an API key. Full guides are at [docs.kwespay.xyz](https://docs.kwespay.xyz).
+
+## Stellar
+
+Run a real XLM or USDC payment on Stellar Testnet from Node.
+
+**You need:** a testnet API key, a merchant with Stellar Testnet enabled and a Stellar wallet set, and a payer account [funded with Friendbot](https://developers.stellar.org/docs/tools/lab/account). To pay in USDC, the payer also needs a USDC trustline and a balance.
+
 ```bash
-yarn add @kwespay/client
+npm install @kwespay/client @stellar/stellar-sdk
+```
+
+```js
+// pay.mjs
+import { KwesPayClient, KwesPayError } from "@kwespay/client";
+import { Keypair, Networks, TransactionBuilder } from "@stellar/stellar-sdk";
+
+const keypair = Keypair.fromSecret(process.env.STELLAR_SECRET);
+
+const wallet = {
+  getAddress: async () => keypair.publicKey(),
+  signTransaction: async (xdr) => {
+    const tx = TransactionBuilder.fromXDR(xdr, Networks.TESTNET);
+    tx.sign(keypair);
+    return tx.toXDR();
+  },
+};
+
+const client = new KwesPayClient({
+  apiKey: process.env.KWESPAY_API_KEY,
+  graphqlEndpoint: "https://api.testnet.kwespay.xyz/graphql",
+});
+
+try {
+  const result = await client.checkout({
+    amount: 1,
+    currency: "USD",
+    token: process.argv[2] ?? "XLM",
+    network: "stellarTestnet",
+    orderId: `demo-${Date.now()}`,
+    wallet,
+    onStatus: (title, detail) => console.log(`${title}: ${detail}`),
+  });
+  console.log(result);
+} catch (err) {
+  if (err instanceof KwesPayError) console.error(err.code, err.message);
+  else throw err;
+  process.exitCode = 1;
+}
 ```
 
 ```bash
-pnpm add @kwespay/client
+KWESPAY_API_KEY=... STELLAR_SECRET=S... node pay.mjs XLM
+KWESPAY_API_KEY=... STELLAR_SECRET=S... node pay.mjs USDC
 ```
 
----
+`result` is typed as `CheckoutResult`:
 
-## Requirements
+```ts
+{ paid: boolean; status: TransactionStatus; transactionReference: string; txHash: string;
+  orderId: string | null; network: NetworkKey; token: string; cryptoAmount: number }
+```
 
-- Node.js 18+
-- TypeScript 5+
-- An EIP-1193 compatible wallet provider (MetaMask, WalletConnect, etc.)
-- A KwesPay API key (see [Prerequisites](#prerequisites))
+**In the browser**, pass any wallet that matches `StellarWalletAdapter`. With Freighter:
 
----
+```ts
+import { getAddress, signTransaction } from "@stellar/freighter-api";
+import type { StellarWalletAdapter } from "@kwespay/client";
 
-## Quick Start
+const wallet: StellarWalletAdapter = { getAddress, signTransaction };
+```
+
+**Configuration on Stellar Testnet**
+
+| | |
+| --- | --- |
+| API endpoint | `https://api.testnet.kwespay.xyz/graphql` |
+| Network key | `stellarTestnet` |
+| Network passphrase | `Test SDF Network ; September 2015` |
+| Payment contract | `CBS6TTZ56NSZLH2PSGA4VHNEBDX6JQV3S2J36KVKTWJ55TK7RN2U7IS5` |
+| XLM | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`, 7 decimals |
+| USDC | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`, 7 decimals |
+| Platform fee | 1%, added on top. Read it as `totalBaseUnits - amountBaseUnits` |
+| `payload.deadline` | A ledger sequence, not a timestamp |
+
+**Errors** are thrown as `KwesPayError` with a `code`:
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_KEY` | The API key is missing, invalid or inactive |
+| `NETWORK_NOT_ENABLED` | The merchant hasn't enabled this network or set a wallet for it |
+| `TOKEN_NOT_SUPPORTED` | The merchant doesn't accept this token on this network |
+| `QUOTE_EXPIRED` | The price lock ended. Request a new quote |
+| `INSUFFICIENT_BALANCE` | The payer can't cover the total and fees |
+| `WALLET_REJECTED` | The customer rejected the request in their wallet |
+| `CONTRACT_ERROR` | The contract rejected the transaction. `message` has the reason |
+| `NETWORK_ERROR` | The KwesPay API couldn't be reached |
+
+Confirm every order on your server before fulfilling it:
+
+```ts
+const check = await client.verifyPayment(result.transactionReference, {
+  orderId: result.orderId,
+  amount: 1,
+  currency: "USD",
+});
+if (check.paid) await fulfilOrder();
+```
+
+## NEAR
+
+Run payments on NEAR Testnet through `pay.kwespay.testnet`. Native NEAR, Circle USDC, USDC.e and USDT are supported.
+
+NEAR payments take a `NearWalletAdapter`: any object with `getAccounts()` and `signAndSendTransaction()`. That's the shape of a [`@near-wallet-selector`](https://github.com/near/wallet-selector) wallet. Since wallet-selector v10 expects `near-api-js` actions, wrap the wallet once with `internalActionToNaj`:
+
+```typescript
+import { KwesPayClient, type NearWalletAdapter } from "@kwespay/client";
+import { setupWalletSelector, internalActionToNaj } from "@near-wallet-selector/core";
+import { setupMeteorWallet } from "@near-wallet-selector/meteor-wallet";
+
+const selector = await setupWalletSelector({ network: "testnet", modules: [setupMeteorWallet()] });
+const wallet = await selector.wallet("meteor-wallet");
+const [{ accountId }] = await wallet.signIn({ contractId: "pay.kwespay.testnet", methodNames: [] });
+
+const nearWallet: NearWalletAdapter = {
+  getAccounts: async () => [{ accountId }],
+  signAndSendTransaction: (tx) => wallet.signAndSendTransaction({ ...tx, actions: tx.actions.map(internalActionToNaj) }),
+};
+
+const client = new KwesPayClient({ apiKey: "YOUR_API_KEY", graphqlEndpoint: "https://api.testnet.kwespay.xyz/graphql" });
+
+const result = await client.checkout({
+  amount: 50,
+  currency: "GHS",
+  token: "USDT",
+  network: "nearTestnet",
+  orderId: "A-1042",
+  wallet: nearWallet,
+});
+```
+
+What happens on NEAR:
+
+- **Native NEAR** calls `pay_near` on the KwesPay contract with the total attached.
+- **Stablecoins** (USDC, USDC.e, USDT) call `ft_transfer_call` on the token, which hands the signed terms to the KwesPay contract in the same transaction.
+- The backend signs the payment for one customer account. `pay()` refuses a wallet signed in as a different account before anything is sent.
+- `pay()` checks the customer's balance over public RPC first, and reports a refunded transfer as `CONTRACT_ERROR` with the contract's reason (for example an expired deadline).
+- The KwesPay fee on NEAR is 1%. As on every chain, read it as `totalBaseUnits − amountBaseUnits`.
+- `deadline` is in seconds; the contract receives `deadline × 1000` milliseconds.
+
+The customer must be storage-registered on the token they pay with, which is true for any account that already holds it.
+
+## Pay with any token through NEAR Intents
+
+Customers can pay with any token [NEAR Intents](https://near-intents.org) supports, and the merchant receives the asset they accept. KwesPay verifies the delivery on-chain before the order counts as paid.
+
+```typescript
+const { quote, options } = await client.getCrossChainOptions({
+  amount: 25, currency: "USD", token: "YOUR_TOKEN", network: "MERCHANT_NETWORK",
+});
+const option = options.find((o) => o.available);
+
+const result = await client.checkoutFromAnotherAsset({
+  quote,
+  originAsset: option.originAsset,
+  refundAddress: customerAddress,
+  orderId: "A-1042",
+  onDeposit: (route) => showDeposit(route.depositAddress, route.depositMemo, route.amountInFormatted),
+  onStatus: (title, detail) => setProgress(title, detail),
+});
+```
+
+- `options` lists every token with its live price, minimum and logos.
+- `onDeposit` gives you what to show the customer. When `depositMemo` is set, it must be included.
+- `refundAddress` is the customer's address on the chain they pay from.
+- Confirm the order on your server with `verifyPayment()`. Webhooks work unchanged.
+
+Merchants turn this on per network in the dashboard.
+
+## EVM
 
 In the browser, one call prices, signs, pays and waits for confirmation:
 
@@ -80,11 +235,10 @@ if (check.paid) await markOrderPaid("A-1042");
 
 `verifyPayment` returns `paid: true` only when KwesPay confirmed the payment on-chain and it matches the order, amount and currency. Otherwise `reason` explains why. The vendor ID is optional when your API key belongs to one merchant.
 
-For Stellar or Sui, pass `wallet` instead of `provider`. See [Connecting a Wallet](#connecting-a-wallet) and the step-by-step `quote()` and `pay()` methods below for full control.
+## Reference
 
----
-
-## Connecting a Wallet
+<details>
+<summary>EVM wallet connection</summary>
 
 `client.pay()` takes a wallet **provider**, not a private key — the SDK never touches keys and never signs anything itself. Every signature (token approval, the payment transaction) is requested through the wallet extension, which prompts the user and returns the signed, broadcast result. Your app's job is just to:
 
@@ -333,98 +487,17 @@ declare global {
 }
 ```
 
-### Non-EVM wallets (Sui / Stellar / NEAR)
+</details>
 
-Sui and Stellar use different wallet interfaces — `SuiWalletAdapter` and `StellarWalletAdapter` — instead of `window.ethereum`. You'd typically get these from `@mysten/wallet-standard`-compatible wallets (e.g. Sui Wallet) or `@stellar/freighter-api` (e.g. Freighter), then pass the adapter as `wallet` instead of `provider`:
+<details>
+<summary>Sui wallets</summary>
 
-```typescript
-// Sui
-const result = await client.pay({ wallet: suiWalletAdapter, payload, onStatus });
+Pass a `SuiWalletAdapter` as `wallet` on `client.pay()` or `client.checkout()`. The SDK picks the right flow from `payload.network`.
 
-// Stellar
-const result = await client.pay({ wallet: stellarWalletAdapter, payload, onStatus });
-```
+</details>
 
-`client.pay()` picks the right flow automatically based on `payload.network` — you never need to branch on network type yourself.
-
-### NEAR
-
-NEAR payments take a `NearWalletAdapter`: any object with `getAccounts()` and `signAndSendTransaction()`. That's the shape of a [`@near-wallet-selector`](https://github.com/near/wallet-selector) wallet. Since wallet-selector v10 expects `near-api-js` actions, wrap the wallet once with `internalActionToNaj`:
-
-```typescript
-import { KwesPayClient, type NearWalletAdapter } from "@kwespay/client";
-import { setupWalletSelector, internalActionToNaj } from "@near-wallet-selector/core";
-import { setupMeteorWallet } from "@near-wallet-selector/meteor-wallet";
-
-const selector = await setupWalletSelector({ network: "testnet", modules: [setupMeteorWallet()] });
-const wallet = await selector.wallet("meteor-wallet");
-const [{ accountId }] = await wallet.signIn({ contractId: "pay.kwespay.testnet", methodNames: [] });
-
-const nearWallet: NearWalletAdapter = {
-  getAccounts: async () => [{ accountId }],
-  signAndSendTransaction: (tx) => wallet.signAndSendTransaction({ ...tx, actions: tx.actions.map(internalActionToNaj) }),
-};
-
-const client = new KwesPayClient({ apiKey: "YOUR_API_KEY", graphqlEndpoint: "https://api.testnet.kwespay.xyz/graphql" });
-
-const result = await client.checkout({
-  amount: 50,
-  currency: "GHS",
-  token: "USDT",
-  network: "nearTestnet",
-  orderId: "A-1042",
-  wallet: nearWallet,
-});
-```
-
-What happens on NEAR:
-
-- **Native NEAR** calls `pay_near` on the KwesPay contract with the total attached.
-- **Stablecoins** (USDC, USDC.e, USDT) call `ft_transfer_call` on the token, which hands the signed terms to the KwesPay contract in the same transaction.
-- The backend signs the payment for one customer account. `pay()` refuses a wallet signed in as a different account before anything is sent.
-- `pay()` checks the customer's balance over public RPC first, and reports a refunded transfer as `CONTRACT_ERROR` with the contract's reason (for example an expired deadline).
-- The KwesPay fee on NEAR is 1%. As on every chain, read it as `totalBaseUnits − amountBaseUnits`.
-- `deadline` is in seconds; the contract receives `deadline × 1000` milliseconds.
-
-The customer must be storage-registered on the token they pay with, which is true for any account that already holds it.
-
-### Pay with another asset (NEAR Intents)
-
-*Powered by NEAR Intents.*
-
-Customers can pay a merchant who accepts USDC on Base with **XLM** or **BTC** instead. [NEAR Intents](https://near-intents.org) converts the payment and delivers USDC straight to the merchant's wallet. KwesPay checks the delivery on Base before it marks the order paid. The customer needs no wallet connection: they send one transfer from any wallet or exchange.
-
-```typescript
-const config = await client.getMerchantConfig("YOUR_VENDOR_ID");
-if (config.crossChainNetworks.includes("base")) {
-  const { quote, options } = await client.getCrossChainOptions({
-    amount: 25, currency: "USD", token: "USDC", network: "base",
-  });
-
-  const result = await client.checkoutFromAnotherAsset({
-    quote,
-    originAsset: "XLM",
-    refundAddress: "G…",
-    orderId: "A-1042",
-    onDeposit: (route) => showDeposit(route.depositAddress, route.depositMemo, route.amountInFormatted),
-    onStatus: (title, detail) => setProgress(title, detail),
-  });
-  console.log(result.paid, result.txHash);
-}
-```
-
-- `options` lists each asset with its live price (`amountInFormatted`), estimated time and minimum. Options with `available: false` include a `reason`.
-- `onDeposit` gives you what to show the customer: the amount, the deposit address and, for XLM, a **memo that must be included**.
-- `refundAddress` is the customer's own address on the chain they pay from. If the conversion can't complete, the deposit is refunded there.
-- For XLM, pass a Stellar `wallet` (the same adapter as Stellar payments) instead of `refundAddress`: the SDK sends the deposit with the memo filled in and refunds to that wallet if needed.
-- `result` has the same shape as `checkout()`. Confirm the order on your server with `verifyPayment()`; webhooks work unchanged.
-- The lower-level steps are `payFromAnotherAsset()`, `getPaymentRoute()`, `pollPaymentRoute()` and `submitCrossChainDeposit()`.
-
-Merchants turn this on per network in the dashboard. Available routes: XLM → USDC on Base (from $1) and BTC → USDC on Base (from $20).
-
----
-
-## API Reference
+<details>
+<summary>API methods</summary>
 
 ### `new KwesPayClient(config)`
 
@@ -577,38 +650,27 @@ interface TransactionStatusResult {
 }
 ```
 
----
+</details>
 
-## Supported Networks
+<details>
+<summary>Network keys</summary>
 
-| Key             | Network                    |
-| --------------- | -------------------------- |
-| `ethereum`    | Ethereum Mainnet           |
-| `sepolia`     | Ethereum Sepolia (testnet) |
-| `base`        | Base Mainnet               |
-| `baseSepolia` | Base Sepolia (testnet)     |
-| `polygon`     | Polygon Mainnet            |
-| `polygonAmoy` | Polygon Amoy (testnet)     |
-| `lisk`        | Lisk Mainnet               |
-| `liskTestnet` | Lisk Testnet               |
-| `MezoTestnet` | Mezo Testnet               |
-| `stellarTestnet` | Stellar Testnet         |
-| `suiTestnet`  | Sui Testnet                |
-| `nearTestnet` | NEAR Testnet               |
+| Key | Network |
+| --- | --- |
+| `stellarTestnet`, `stellarMainnet` | Stellar |
+| `nearTestnet` | NEAR Testnet |
+| `ethereum`, `sepolia` | Ethereum |
+| `base`, `baseSepolia` | Base |
+| `polygon`, `polygonAmoy` | Polygon |
+| `arbitrum`, `arbitrumSepolia` | Arbitrum |
+| `lisk`, `liskTestnet` | Lisk |
+| `mezoTestnet` | Mezo Testnet |
+| `suiTestnet` | Sui Testnet |
 
----
+</details>
 
-## Supported Tokens
-
-`ETH`, `MATIC`, `USDT`, `USDC`, `USDC.E`, `USDBC`, `DAI`, `LSK`, `MUSD`, `XLM`, `SUI`, `NEAR`
-
-On `nearTestnet`: `NEAR` (native), `USDC` (Circle, `3e2210e1…b8af`), `USDC.E` (`usdc.fakes.testnet`) and `USDT` (`usdt.fakes.testnet`).
-
-Custom token addresses are also accepted as a plain string.
-
----
-
-## Supported Fiat Currencies
+<details>
+<summary>Fiat currencies</summary>
 
 `fiatAmount`/`fiatCurrency` are quoted server-side against live FX rates, so `fiatCurrency` accepts any standard ISO 4217 code — it isn't limited to the list below. These are the currencies KwesPay actively supports for African markets:
 
@@ -634,41 +696,10 @@ const payload = await client.quote({
 
 `fiatCurrency` defaults to `"USD"` if omitted.
 
----
+</details>
 
-## Error Handling
-
-All errors are thrown as `KwesPayError` instances with a `code` property.
-
-```typescript
-import { KwesPayClient, KwesPayError } from "@kwespay/client";
-
-try {
-  const payload = await client.quote({ ... });
-  const result = await client.pay({ provider, payload });
-} catch (err) {
-  if (err instanceof KwesPayError) {
-    switch (err.code) {
-      case "WALLET_REJECTED":
-        console.error("User cancelled the transaction.");
-        break;
-      case "INSUFFICIENT_BALANCE":
-        console.error("Not enough funds:", err.message);
-        break;
-      case "WRONG_NETWORK":
-        console.error("Network mismatch:", err.message);
-        break;
-      case "QUOTE_EXPIRED":
-        console.error("Quote expired. Request a new one.");
-        break;
-      default:
-        console.error(`Payment failed [${err.code}]:`, err.message);
-    }
-  }
-}
-```
-
-### Error Codes
+<details>
+<summary>All error codes</summary>
 
 | Code                     | Description                                       |
 | ------------------------ | ------------------------------------------------- |
@@ -688,9 +719,10 @@ try {
 | `INVALID_REFUND_ADDRESS` | The refund address isn't valid for that chain  |
 | `UNKNOWN`              | Unclassified server-side error                    |
 
----
+</details>
 
-## TypeScript
+<details>
+<summary>TypeScript types</summary>
 
 The SDK is written in TypeScript and ships its own types. No additional `@types` packages are required.
 
@@ -712,7 +744,7 @@ import type {
 } from "@kwespay/client";
 ```
 
----
+</details>
 
 ## License
 
