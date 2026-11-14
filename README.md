@@ -2,7 +2,7 @@
 
 Accept crypto priced in fiat on **Stellar**, **NEAR** and EVM networks with one TypeScript call. KwesPay sets the price and signs the terms, the customer's wallet pays, and the contract settles directly to the merchant.
 
-![How a KwesPay payment moves: your app requests a price, KwesPay signs the terms, the customer approves in their wallet, the contract settles, and the merchant is paid](https://raw.githubusercontent.com/ArthurEmma2/Kwespay-sdk/main/assets/payment-flow.png)
+![How a KwesPay payment moves: your app requests a price, KwesPay signs the terms, the customer approves in their wallet, the contract settles, and the merchant is paid](https://raw.githubusercontent.com/Kwespay/Kwespay-sdk/main/assets/payment-flow.png)
 
 | Chain | Network keys | Assets | Wallet |
 | --- | --- | --- | --- |
@@ -22,9 +22,17 @@ Create a merchant at [app.kwespay.xyz](https://app.kwespay.xyz), or [app.testnet
 
 ## Stellar
 
-Run a real XLM or USDC payment on Stellar Testnet from Node.
+Accept XLM and USDC on Stellar, priced in any fiat currency. KwesPay prices the order and signs the payment terms. The customer's wallet submits one Soroban transaction, and the KwesPay contract checks KwesPay's signature, takes the amount plus the 1% fee, and pays the merchant in that same transaction. KwesPay then confirms the payment from the contract's events.
 
-**You need:** a testnet API key, a merchant with Stellar Testnet enabled and a Stellar wallet set, and a payer account [funded with Friendbot](https://developers.stellar.org/docs/tools/lab/account). To pay in USDC, the payer also needs a USDC trustline and a balance.
+**Try it without writing code.** The [KwesPay Console](https://console.kwespay.xyz/?network=stellarTestnet) runs real Stellar Testnet payments through this SDK in your browser and shows every request, response and status.
+
+### Before you start
+
+1. Create a merchant at [app.testnet.kwespay.xyz](https://app.testnet.kwespay.xyz), enable **Stellar Testnet**, set a Stellar receiving wallet, and create an API key.
+2. Fund a payer account with [Friendbot](https://developers.stellar.org/docs/tools/lab/account).
+3. To pay in USDC, add a trustline to `USDC` issued by `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`, then get test USDC from [Circle's faucet](https://faucet.circle.com).
+
+### Pay from Node
 
 ```bash
 npm install @kwespay/client @stellar/stellar-sdk
@@ -74,55 +82,137 @@ KWESPAY_API_KEY=... STELLAR_SECRET=S... node pay.mjs XLM
 KWESPAY_API_KEY=... STELLAR_SECRET=S... node pay.mjs USDC
 ```
 
-`result` is typed as `CheckoutResult`:
+`result` is a `CheckoutResult`:
 
 ```ts
 { paid: boolean; status: TransactionStatus; transactionReference: string; txHash: string;
   orderId: string | null; network: NetworkKey; token: string; cryptoAmount: number }
 ```
 
-**In the browser**, pass any wallet that matches `StellarWalletAdapter`. With Freighter:
+### Pay from the browser
 
-```ts
-import { getAddress, signTransaction } from "@stellar/freighter-api";
-import type { StellarWalletAdapter } from "@kwespay/client";
+Any wallet that matches `StellarWalletAdapter` works. [Varial](https://varialwallet.com) (formerly Freighter) still speaks `@stellar/freighter-api`:
 
-const wallet: StellarWalletAdapter = { getAddress, signTransaction };
+```bash
+npm install @kwespay/client @stellar/stellar-sdk @stellar/freighter-api
 ```
 
-**Configuration on Stellar Testnet**
+```ts
+import { KwesPayClient, type StellarWalletAdapter } from "@kwespay/client";
+import { requestAccess, signTransaction } from "@stellar/freighter-api";
 
-| | |
+const wallet: StellarWalletAdapter = {
+  getAddress: async () => {
+    const { address, error } = await requestAccess();
+    if (error) throw new Error(error.message);
+    return address;
+  },
+  signTransaction: async (xdr, opts) => {
+    const { signedTxXdr, error } = await signTransaction(xdr, { networkPassphrase: opts?.networkPassphrase });
+    if (error) throw new Error(error.message);
+    return signedTxXdr;
+  },
+};
+
+const client = new KwesPayClient({
+  apiKey: "YOUR_API_KEY",
+  graphqlEndpoint: "https://api.testnet.kwespay.xyz/graphql",
+});
+
+const result = await client.checkout({
+  amount: 50,
+  currency: "GHS",
+  token: "USDC",
+  network: "stellarTestnet",
+  orderId: "A-1042",
+  wallet,
+  onStatus: (title, detail) => setProgress(title, detail),
+});
+```
+
+Freighter returns errors instead of throwing them, so the adapter throws them. A declined request then surfaces as `WALLET_REJECTED`.
+
+### What `checkout()` does
+
+| `onStatus` title | What happens |
+| --- | --- |
+| `Getting quote` | KwesPay prices the fiat amount in XLM or USDC at live rates |
+| `Checking balance` | The SDK loads the payer's Stellar account |
+| `Confirm payment` | The SDK simulates the contract call, then asks the wallet to sign |
+| `Waiting for confirmation` | The transaction is submitted and the SDK waits for the ledger to include it |
+| `Confirming payment` | KwesPay matches the contract event to the order and sets the final status |
+
+`result.paid` is `true` when the final status is `completed`, or `overpaid` when the customer sent more than asked. `underpaid`, `failed` and `expired` are not paid.
+
+<details>
+<summary>Step by step with <code>quote()</code> and <code>pay()</code></summary>
+
+Use these when you want to show the price before the customer approves.
+
+```ts
+const { address } = await requestAccess();
+
+const payload = await client.quote({
+  fiatAmount: 50,
+  fiatCurrency: "GHS",
+  cryptoCurrency: "XLM",
+  network: "stellarTestnet",
+  payerWalletAddress: address,
+});
+
+const fee = BigInt(payload.totalBaseUnits) - BigInt(payload.amountBaseUnits);
+
+const { txHash } = await client.pay({ wallet, payload });
+
+const { transactionStatus } = await client.pollTransactionStatus(payload.transactionReference);
+```
+
+Amounts are in base units with 7 decimals for both XLM and USDC. The customer pays `totalBaseUnits`, and the merchant receives `amountBaseUnits`.
+
+</details>
+
+### Configuration
+
+| | Stellar Testnet |
 | --- | --- |
 | API endpoint | `https://api.testnet.kwespay.xyz/graphql` |
 | Network key | `stellarTestnet` |
 | Network passphrase | `Test SDF Network ; September 2015` |
-| Payment contract | `CBS6TTZ56NSZLH2PSGA4VHNEBDX6JQV3S2J36KVKTWJ55TK7RN2U7IS5` |
+| Payment contract | [`CBS6TTZ56NSZLH2PSGA4VHNEBDX6JQV3S2J36KVKTWJ55TK7RN2U7IS5`](https://stellar.expert/explorer/testnet/contract/CBS6TTZ56NSZLH2PSGA4VHNEBDX6JQV3S2J36KVKTWJ55TK7RN2U7IS5) |
 | XLM | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`, 7 decimals |
 | USDC | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`, 7 decimals |
 | Platform fee | 1%, added on top. Read it as `totalBaseUnits - amountBaseUnits` |
 | `payload.deadline` | A ledger sequence, not a timestamp |
 
-**Errors** are thrown as `KwesPayError` with a `code`:
+The SDK takes the contract address from KwesPay's response for each payment, so you never hard-code it. Example payments: [XLM](https://stellar.expert/explorer/testnet/tx/624670389c36475051e21032eed96b6964d8968b9c96ea8a0646a1a0f023b583), [USDC](https://stellar.expert/explorer/testnet/tx/25fe82232ce96602f3e0c0a498e6d408ff3c1f62be7425eff4295ddc037711f6).
 
-| Code | Meaning |
+<details>
+<summary>Errors on Stellar</summary>
+
+Errors are thrown as `KwesPayError` with a `code`.
+
+| Code | Usual cause on Stellar |
 | --- | --- |
 | `INVALID_KEY` | The API key is missing, invalid or inactive |
-| `NETWORK_NOT_ENABLED` | The merchant hasn't enabled this network or set a wallet for it |
-| `TOKEN_NOT_SUPPORTED` | The merchant doesn't accept this token on this network |
+| `NETWORK_NOT_ENABLED` | The merchant hasn't enabled Stellar or set a Stellar wallet |
+| `TOKEN_NOT_SUPPORTED` | The merchant doesn't accept this token on Stellar |
 | `QUOTE_EXPIRED` | The price lock ended. Request a new quote |
-| `INSUFFICIENT_BALANCE` | The payer can't cover the total and fees |
-| `WALLET_REJECTED` | The customer rejected the request in their wallet |
-| `CONTRACT_ERROR` | The contract rejected the transaction. `message` has the reason |
+| `INSUFFICIENT_BALANCE` | The payer's account doesn't exist on this network. Fund it with Friendbot |
+| `WALLET_REJECTED` | The customer declined in their wallet |
+| `CONTRACT_ERROR` | Simulation or submission failed, for example no USDC trustline or not enough balance. `message` has the reason |
 | `NETWORK_ERROR` | The KwesPay API couldn't be reached |
+
+</details>
+
+### Confirm on your server
 
 Confirm every order on your server before fulfilling it:
 
 ```ts
 const check = await client.verifyPayment(result.transactionReference, {
   orderId: result.orderId,
-  amount: 1,
-  currency: "USD",
+  amount: 50,
+  currency: "GHS",
 });
 if (check.paid) await fulfilOrder();
 ```
@@ -362,7 +452,7 @@ Works with plain `<script type="module">`, Vite, webpack, or any other bundler �
 > </script>
 > ```
 >
-> The CDN build only covers EVM networks. Sui and Stellar payments dynamically load `@mysten/sui` / `@stellar/stellar-sdk`, which requires a bundler that can resolve npm packages — see [Non-EVM wallets](#non-evm-wallets-sui--stellar--near) below.
+> The CDN build only covers EVM networks. Sui and Stellar payments dynamically load `@mysten/sui` / `@stellar/stellar-sdk`, which requires a bundler that can resolve npm packages — see [Stellar](#stellar) above.
 
 ### React
 
@@ -501,6 +591,7 @@ Creates a new client instance.
 | Parameter         | Type       | Required | Description          |
 | ----------------- | ---------- | -------- | -------------------- |
 | `config.apiKey` | `string` | Yes      | Your KwesPay API key |
+| `config.graphqlEndpoint` | `string` | No | API endpoint. Use `https://api.testnet.kwespay.xyz/graphql` for testnets |
 
 ---
 
